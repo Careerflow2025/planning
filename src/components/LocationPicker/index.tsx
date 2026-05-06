@@ -8,6 +8,29 @@ import StreetViewPane from "./StreetViewPane";
 import PropertyDataCard from "./PropertyDataCard";
 import { centroidOf, SESSION_KEY, type SelectedLocation } from "./types";
 
+/**
+ * Move a lat/lng forward in a heading direction by a given distance in metres.
+ * Used to estimate the building IN FRONT of a Street View pano, since the pano
+ * is positioned on the street and the user is facing their property.
+ *
+ * 12 m is a sensible default for UK residential streets — the road is ~6-8m
+ * wide and front gardens are ~3-5m, so 12m lands roughly on the building wall.
+ */
+function offsetByHeading(
+  lat: number,
+  lng: number,
+  headingDeg: number,
+  distanceM: number,
+): { lat: number; lng: number } {
+  const R = 6_378_137; // Earth radius in metres
+  const headingRad = (headingDeg * Math.PI) / 180;
+  const dLat = ((distanceM * Math.cos(headingRad)) / R) * (180 / Math.PI);
+  const dLng =
+    ((distanceM * Math.sin(headingRad)) / (R * Math.cos((lat * Math.PI) / 180))) *
+    (180 / Math.PI);
+  return { lat: lat + dLat, lng: lng + dLng };
+}
+
 /** Pure heuristic: nearest building (by closest vertex) to a target lat/lng. */
 function nearestBuildingTo(
   lat: number,
@@ -133,15 +156,28 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
    * selection mid-flight.
    */
   const handleStreetViewLocation = useCallback(
-    async ({ lat: newLat, lng: newLng }: { lat: number; lng: number }) => {
-      // Fetch first (and update buildings via loadBuildings) — this is awaited so
-      // the React batch below sees the freshest data and commits cleanly.
-      const fresh = await loadBuildings(newLat, newLng);
-      const closest = nearestBuildingTo(newLat, newLng, fresh);
+    async ({
+      lat: panoLat,
+      lng: panoLng,
+      heading,
+    }: {
+      lat: number;
+      lng: number;
+      heading: number;
+    }) => {
+      // The pano position is on the street. The user is facing their property.
+      // Project 12m in the heading direction to estimate where their property
+      // actually sits, then look for the closest building to THAT point.
+      const target = offsetByHeading(panoLat, panoLng, heading, 12);
 
-      // Commit pinned coords. No side-effect useEffect to undo this.
-      setPinned((p) => (p ? { ...p, lat: newLat, lng: newLng } : null));
-      // Only overwrite selected if we actually have a candidate — otherwise
+      // Fetch buildings around the offset target (Overpass radius is 500m so this
+      // catches everything within walking distance).
+      const fresh = await loadBuildings(target.lat, target.lng);
+      const closest = nearestBuildingTo(target.lat, target.lng, fresh);
+
+      // Commit pinned (so the SelectionMap recentres) + selected together.
+      setPinned((p) => (p ? { ...p, lat: target.lat, lng: target.lng } : null));
+      // Only overwrite selected if we actually found a building — otherwise
       // keep the prior selection so the modal stays open.
       if (closest) setSelected(closest);
     },

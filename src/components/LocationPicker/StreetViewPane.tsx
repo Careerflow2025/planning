@@ -8,9 +8,11 @@ interface StreetViewPaneProps {
   lat: number;
   lng: number;
   /** Called when the user navigates Street View elsewhere and clicks
-   *  "My property is here". The parent re-fetches buildings around the new
-   *  pano position and updates the selection accordingly. */
-  onLocationConfirmed: (pos: { lat: number; lng: number }) => void;
+   *  "My property is here". The pano position is on the STREET, but the user is
+   *  facing their property — so we also pass the camera heading. The parent
+   *  applies a heading-direction offset to find the building IN FRONT of the
+   *  user, not the building they're standing on (which is usually a neighbour). */
+  onLocationConfirmed: (pos: { lat: number; lng: number; heading: number }) => void;
 }
 
 /**
@@ -88,7 +90,8 @@ export default function StreetViewPane({
   }, [lat, lng]);
 
   const handleSelectHere = () => {
-    onLocationConfirmed({ ...currentPosRef.current });
+    const heading = panoRef.current?.getPov().heading ?? 0;
+    onLocationConfirmed({ ...currentPosRef.current, heading });
   };
 
   if (!configured) {
