@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import AddressSearch from "@/components/AddressSearch";
 import { fetchBuildingFootprints, type BuildingFootprint } from "@/lib/overpass";
 import SelectionMap from "./SelectionMap";
-import View3D from "./View3D";
-import BirdsEyeMap from "./BirdsEyeMap";
+import StreetViewPane from "./StreetViewPane";
+import Aerial3DPane from "./Aerial3DPane";
 import { centroidOf, SESSION_KEY, type SelectedLocation } from "./types";
 
 interface LocationPickerProps {
@@ -100,11 +100,8 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
     setSelected(null);
   };
 
-  // Sizing: variant=hero is fuller, variant=wizard fits inside a wizard step container.
-  // mapHeight is a Tailwind class for the wrapper. paneCss is a real CSS value passed to
-  // child components that use `style={{ height }}`.
+  // Sizing for the inline (pre-modal) state — Tailwind class on the wrapper.
   const mapHeight = variant === "hero" ? "h-[420px]" : "h-[360px]";
-  const paneCssHeight = "100%";
 
   // Compute the centre point we feed into the 3D + bird's-eye panes
   const selectedCentroid = selected ? centroidOf(selected.coords) : null;
@@ -224,8 +221,8 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
                   }`}
                 >
                   {t === "map" && "🗺 Map"}
-                  {t === "3d" && "🎬 3D / Street"}
-                  {t === "aerial" && "🛰 Aerial"}
+                  {t === "3d" && "🚶 Street View"}
+                  {t === "aerial" && "🛰 3D Aerial"}
                 </button>
               ))}
             </div>
@@ -242,14 +239,19 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
                 />
               </div>
               <div className={`${mobileTab !== "3d" ? "hidden md:block" : ""} min-h-0`}>
-                <View3D
+                <StreetViewPane
+                  lat={selectedCentroid.lat}
+                  lng={selectedCentroid.lng}
+                  buildings={buildings}
+                  onBuildingSelected={setSelected}
+                />
+              </div>
+              <div className={`${mobileTab !== "aerial" ? "hidden md:block" : ""} min-h-0`}>
+                <Aerial3DPane
                   lat={selectedCentroid.lat}
                   lng={selectedCentroid.lng}
                   address={pinned.address}
                 />
-              </div>
-              <div className={`${mobileTab !== "aerial" ? "hidden md:block" : ""} min-h-0`}>
-                <BirdsEyeMap building={selected} height={paneCssHeight} />
               </div>
             </div>
 
@@ -258,7 +260,7 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
               <p className="text-sm text-green-900 flex-1 min-w-0">
                 <span className="font-semibold">Is this your property?</span>{" "}
                 <span className="text-green-700">
-                  Walk around any pane to verify, or click another building on the map.
+                  Click a building on the map, or navigate Street View and tap &quot;My property is here&quot;.
                 </span>
               </p>
               <div className="flex gap-2 flex-shrink-0">
