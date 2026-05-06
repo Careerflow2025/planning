@@ -1,16 +1,15 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import AddressSearch from "./AddressSearch";
-import { fetchBuildingFootprints, type BuildingFootprint } from "@/lib/overpass";
 
-/* Lazy-load the map (Leaflet needs window) */
-const LocationMap = dynamic(() => import("./LocationMap"), {
+/* Lazy-load the LocationPicker (Leaflet needs window) */
+const LocationPicker = dynamic(() => import("./LocationPicker"), {
   ssr: false,
   loading: () => (
-    <div className="h-[320px] bg-gray-100 rounded-xl animate-pulse flex items-center justify-center">
+    <div className="h-[420px] bg-gray-100 rounded-xl animate-pulse flex items-center justify-center">
       <svg className="w-8 h-8 text-gray-300 animate-spin" viewBox="0 0 24 24" fill="none">
         <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
         <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
@@ -19,8 +18,15 @@ const LocationMap = dynamic(() => import("./LocationMap"), {
   ),
 });
 
+/* Lazy-load the legacy LocationMap for the photo/documents tabs (small map preview) */
+const LocationMap = dynamic(() => import("./LocationMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-[240px] bg-gray-100 rounded-xl animate-pulse" />
+  ),
+});
+
 type ActiveOption = "postcode" | "photo" | "documents";
-type BuildingStep = "loading" | "prompting" | "selected" | "confirmed" | "unavailable";
 
 interface LocationData {
   lat: number;
@@ -31,42 +37,6 @@ interface LocationData {
 export default function HomeActionBox() {
   const router = useRouter();
   const [active, setActive] = useState<ActiveOption>("postcode");
-
-  /* ── Postcode / address state ── */
-  const [location, setLocation] = useState<LocationData | null>(null);
-
-  /* ── Building selection state ── */
-  const [buildingStep, setBuildingStep] = useState<BuildingStep>("loading");
-  const [buildings, setBuildings] = useState<BuildingFootprint[]>([]);
-  const [selectedBuilding, setSelectedBuilding] = useState<BuildingFootprint | null>(null);
-
-  /* Fetch building footprints when location is set */
-  useEffect(() => {
-    if (!location) {
-      setBuildings([]);
-      setSelectedBuilding(null);
-      setBuildingStep("loading");
-      return;
-    }
-
-    let cancelled = false;
-    setBuildingStep("loading");
-    setSelectedBuilding(null);
-
-    fetchBuildingFootprints(location.lat, location.lng)
-      .then((result) => {
-        if (cancelled) return;
-        setBuildings(result);
-        setBuildingStep(result.length > 0 ? "prompting" : "unavailable");
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setBuildings([]);
-        setBuildingStep("unavailable");
-      });
-
-    return () => { cancelled = true; };
-  }, [location?.lat, location?.lng]);
 
   /* ── Photo state ── */
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -173,136 +143,21 @@ export default function HomeActionBox() {
       <div className="bg-white rounded-b-2xl border border-t-0 border-border shadow-xl shadow-black/5 p-6 md:p-8">
 
         {/* ═══════════════════════════════════
-            POSTCODE / ADDRESS — Google-Maps style
+            POSTCODE / ADDRESS — 3-pane LocationPicker
             ═══════════════════════════════════ */}
         {active === "postcode" && (
-          <div className="space-y-4 step-enter">
-            <AddressSearch
-              onSelect={(result) => setLocation(result)}
-              placeholder="Search for a place or postcode..."
-              autoFocus
+          <div className="step-enter">
+            <LocationPicker
+              variant="hero"
+              onConfirm={(loc) => {
+                try {
+                  sessionStorage.setItem("planscope_location", JSON.stringify(loc));
+                } catch {
+                  /* sessionStorage may be unavailable in private mode */
+                }
+                router.push("/start");
+              }}
             />
-
-            {/* Map + building selection */}
-            {location && (
-              <div className="space-y-4 step-enter">
-                {/* Location found banner */}
-                <div className="bg-accent-light border border-accent/30 rounded-xl p-3 flex items-center gap-3">
-                  <svg className="w-5 h-5 text-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <div className="min-w-0">
-                    <p className="font-medium text-sm text-accent">Location found</p>
-                    <p className="text-sm text-gray-700 truncate">{location.display}</p>
-                  </div>
-                </div>
-
-                {/* Building step: Loading */}
-                {buildingStep === "loading" && (
-                  <div className="flex items-center gap-2 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl">
-                    <svg className="w-5 h-5 animate-spin text-blue-500" viewBox="0 0 24 24" fill="none">
-                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-                      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
-                    </svg>
-                    <span className="text-sm text-blue-700">Loading building outlines...</span>
-                  </div>
-                )}
-
-                {/* Building step: Prompting — click on your property */}
-                {buildingStep === "prompting" && (
-                  <div className="flex items-center gap-2 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl step-enter">
-                    <svg className="w-5 h-5 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
-                    </svg>
-                    <span className="text-sm text-blue-700 font-medium">Click on your property on the map</span>
-                  </div>
-                )}
-
-                {/* Building step: Selected — confirm property */}
-                {buildingStep === "selected" && selectedBuilding && (
-                  <div className="bg-green-50 border border-green-200 rounded-xl p-3 space-y-3 step-enter">
-                    <div className="flex items-center gap-2">
-                      <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                      </svg>
-                      <span className="text-sm text-green-700 font-medium">Property boundary identified</span>
-                    </div>
-                    <p className="text-sm text-green-700">Is this your property?</p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => {
-                          setBuildingStep("confirmed");
-                          try {
-                            sessionStorage.setItem(
-                              "planscope_building",
-                              JSON.stringify(selectedBuilding)
-                            );
-                          } catch { /* sessionStorage may be unavailable */ }
-                        }}
-                        className="flex-1 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors"
-                      >
-                        Yes, that&apos;s correct
-                      </button>
-                      <button
-                        onClick={() => {
-                          setSelectedBuilding(null);
-                          setBuildingStep("prompting");
-                        }}
-                        className="flex-1 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-semibold hover:bg-gray-50 transition-colors"
-                      >
-                        No, let me try again
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Building step: Confirmed — show green banner */}
-                {buildingStep === "confirmed" && (
-                  <div className="bg-green-50 border border-green-200 rounded-xl p-3 flex items-center gap-2 step-enter">
-                    <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span className="text-sm text-green-700 font-medium">Property confirmed</span>
-                  </div>
-                )}
-
-                {/* Map — building select mode when prompting or selected */}
-                <LocationMap
-                  lat={location.lat}
-                  lng={location.lng}
-                  onLocationChange={(lat, lng) =>
-                    setLocation((prev) => prev ? { ...prev, lat, lng } : null)
-                  }
-                  buildingSelectMode={buildingStep === "prompting" || buildingStep === "selected" || buildingStep === "confirmed"}
-                  buildings={buildings}
-                  selectedBuilding={selectedBuilding}
-                  onBuildingSelected={(b) => {
-                    setSelectedBuilding(b);
-                    setBuildingStep("selected");
-                  }}
-                  draggable={buildingStep === "unavailable"}
-                />
-
-                {/* Confirm & Continue — show when confirmed or unavailable (fallback) */}
-                {(buildingStep === "confirmed" || buildingStep === "unavailable") && (
-                  <button
-                    onClick={handleContinue}
-                    className="w-full py-3.5 bg-accent text-white rounded-xl font-semibold text-lg hover:bg-accent-hover transition-colors flex items-center justify-center gap-2 step-enter"
-                  >
-                    Confirm Location &amp; Continue
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                    </svg>
-                  </button>
-                )}
-              </div>
-            )}
-
-            {!location && (
-              <p className="text-xs text-muted text-center">
-                Type a postcode or address — we&apos;ll show it on the map so you can confirm the exact location.
-              </p>
-            )}
           </div>
         )}
 

@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   REPORTS,
   searchReports,
@@ -15,6 +16,20 @@ import {
   mapBuildingType,
   deriveProjectName,
 } from "@/lib/utils/guided-flow-mapper";
+import { SESSION_KEY, type SelectedLocation } from "@/components/LocationPicker/types";
+
+/* Lazy-load LocationPicker (Leaflet needs window) */
+const LocationPicker = dynamic(() => import("@/components/LocationPicker"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-[420px] bg-gray-100 rounded-xl animate-pulse flex items-center justify-center">
+      <svg className="w-8 h-8 text-gray-300 animate-spin" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+        <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+      </svg>
+    </div>
+  ),
+});
 
 /* ───── Types ───── */
 interface ProjectData {
@@ -114,6 +129,29 @@ export default function GuidedFlow() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
+
+  /* Preload from sessionStorage if user picked their location on the home page hero */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const cached = sessionStorage.getItem(SESSION_KEY);
+      if (!cached) return;
+      const parsed: SelectedLocation = JSON.parse(cached);
+      if (typeof parsed.lat !== "number" || typeof parsed.lng !== "number") return;
+      setData((d) => ({
+        ...d,
+        address: parsed.address ?? d.address,
+        postcode: parsed.postcode ?? d.postcode,
+        lat: parsed.lat,
+        lng: parsed.lng,
+      }));
+      setAddressConfirmed(true);
+      // Auto-skip the location step
+      setStep("q-project");
+    } catch {
+      /* ignore parse errors */
+    }
+  }, []);
 
   const stepIndex = STEPS.indexOf(step);
   const progress = ((stepIndex + 1) / STEPS.length) * 100;
@@ -283,6 +321,30 @@ export default function GuidedFlow() {
         </div>
       </header>
 
+      {/* ── Site breadcrumb (only when address is confirmed and we're past the location step) ── */}
+      {addressConfirmed && data.address && step !== "location" && (
+        <div className="bg-green-50 border-b border-green-200 px-6 py-2 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <svg className="w-4 h-4 text-green-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            <span className="text-xs text-green-800 truncate">
+              <span className="font-semibold">Site:</span> {data.address}
+            </span>
+          </div>
+          <button
+            onClick={() => {
+              try { sessionStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
+              setAddressConfirmed(false);
+              setStep("location");
+            }}
+            className="text-xs text-green-700 hover:underline flex-shrink-0 font-medium"
+          >
+            Edit
+          </button>
+        </div>
+      )}
+
       {/* ── Progress bar ── */}
       <div className="h-1 bg-gray-100">
         <div
@@ -296,157 +358,30 @@ export default function GuidedFlow() {
         <div className="w-full max-w-xl step-enter" key={step}>
           {/* ════════════ STEP: LOCATION ════════════ */}
           {step === "location" && (
-            <div className="space-y-6">
+            <div className="space-y-6 max-w-5xl mx-auto w-full">
               <div className="text-center space-y-2">
                 <h1 className="text-2xl md:text-3xl font-bold">
                   Where is your site?
                 </h1>
                 <p className="text-muted">
-                  Enter your postcode and we&apos;ll find the property.
+                  Search for your postcode, then click your property on the map.
                 </p>
               </div>
 
-              <div className="space-y-3">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="e.g. SW1A 1AA"
-                    value={data.postcode}
-                    onChange={(e) =>
-                      setData((d) => ({
-                        ...d,
-                        postcode: e.target.value.toUpperCase(),
-                      }))
-                    }
-                    onKeyDown={(e) => e.key === "Enter" && handlePostcodeLookup()}
-                    className="flex-1 px-4 py-3 border border-border rounded-lg text-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                    autoFocus
-                  />
-                  <button
-                    onClick={handlePostcodeLookup}
-                    disabled={!data.postcode.trim() || postcodeLoading}
-                    className="px-6 py-3 bg-primary text-white rounded-lg font-medium hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {postcodeLoading ? "Looking up..." : "Find"}
-                  </button>
-                </div>
-
-                {postcodeError && (
-                  <p className="text-red-600 text-sm">{postcodeError}</p>
-                )}
-
-                {data.address && !addressConfirmed && (
-                  <div className="border border-border rounded-lg p-4 space-y-3 bg-card-bg">
-                    <div>
-                      <p className="font-medium">{data.address}</p>
-                      <p className="text-sm text-muted">
-                        Lat: {data.lat?.toFixed(5)}, Lng:{" "}
-                        {data.lng?.toFixed(5)}
-                      </p>
-                    </div>
-
-                    {/* Map preview */}
-                    <div className="w-full h-48 bg-gray-200 rounded-lg flex items-center justify-center overflow-hidden">
-                      <img
-                        src={`https://maps.googleapis.com/maps/api/staticmap?center=${data.lat},${data.lng}&zoom=17&size=600x300&maptype=roadmap&markers=color:red%7C${data.lat},${data.lng}&key=YOUR_API_KEY`}
-                        alt="Map preview"
-                        className="w-full h-full object-cover hidden"
-                      />
-                      <div className="text-center text-muted text-sm p-4">
-                        <svg className="w-10 h-10 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                        Map preview will appear when Google Maps API is connected
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        setAddressConfirmed(true);
-                      }}
-                      className="w-full py-3 bg-accent text-white rounded-lg font-medium hover:bg-green-700 transition-colors text-lg"
-                    >
-                      This is my site
-                    </button>
-                  </div>
-                )}
-
-                {addressConfirmed && (
-                  <div className="border-2 border-accent rounded-lg p-4 bg-accent-light space-y-2">
-                    <div className="flex items-center gap-2">
-                      <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                      <span className="font-medium text-accent">
-                        Site confirmed
-                      </span>
-                    </div>
-                    <p className="text-sm">{data.address}</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Advanced input toggle */}
-              <details className="text-sm">
-                <summary className="text-muted cursor-pointer hover:text-foreground">
-                  Can&apos;t find your address? Enter manually
-                </summary>
-                <div className="mt-3 space-y-3 p-4 border border-border rounded-lg">
-                  <input
-                    type="text"
-                    placeholder="Full address"
-                    value={data.address}
-                    onChange={(e) =>
-                      setData((d) => ({ ...d, address: e.target.value }))
-                    }
-                    className="w-full px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                  />
-                  <div className="grid grid-cols-2 gap-3">
-                    <input
-                      type="number"
-                      step="any"
-                      placeholder="Latitude"
-                      value={data.lat ?? ""}
-                      onChange={(e) =>
-                        setData((d) => ({
-                          ...d,
-                          lat: e.target.value ? parseFloat(e.target.value) : null,
-                        }))
-                      }
-                      className="px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <input
-                      type="number"
-                      step="any"
-                      placeholder="Longitude"
-                      value={data.lng ?? ""}
-                      onChange={(e) =>
-                        setData((d) => ({
-                          ...d,
-                          lng: e.target.value ? parseFloat(e.target.value) : null,
-                        }))
-                      }
-                      className="px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                  </div>
-                  <button
-                    onClick={() => setAddressConfirmed(true)}
-                    disabled={!data.address.trim()}
-                    className="w-full py-2 bg-accent text-white rounded-lg font-medium disabled:opacity-50"
-                  >
-                    Confirm this address
-                  </button>
-                </div>
-              </details>
-
-              <button
-                onClick={next}
-                disabled={!addressConfirmed}
-                className="w-full py-4 bg-primary text-white rounded-xl font-semibold text-lg hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                Continue
-              </button>
+              <LocationPicker
+                variant="wizard"
+                onConfirm={(loc) => {
+                  setData((d) => ({
+                    ...d,
+                    address: loc.address,
+                    postcode: loc.postcode,
+                    lat: loc.lat,
+                    lng: loc.lng,
+                  }));
+                  setAddressConfirmed(true);
+                  next();
+                }}
+              />
             </div>
           )}
 
