@@ -8,16 +8,22 @@ const OVERPASS_API = "https://overpass-api.de/api/interpreter";
 
 /**
  * Fetch building footprints from OpenStreetMap within a radius of a point.
+ *
+ * Default radius 500m comfortably covers what the user sees at zoom 19 in the
+ * SelectionMap, with margin for panning. We also include relations (multipolygon
+ * buildings) — semi-detached pairs, terraces, and large estates in UK OSM data
+ * are often tagged as relations rather than ways.
  */
 export async function fetchBuildingFootprints(
   lat: number,
   lng: number,
-  radius = 150
+  radius = 500
 ): Promise<BuildingFootprint[]> {
   const query = `
-    [out:json][timeout:10];
+    [out:json][timeout:15];
     (
       way["building"](around:${radius},${lat},${lng});
+      relation["building"](around:${radius},${lat},${lng});
     );
     out body geom;
   `;
@@ -35,7 +41,9 @@ export async function fetchBuildingFootprints(
   return (data.elements || [])
     .filter(
       (el: { type: string; geometry?: unknown[] }) =>
-        el.type === "way" && el.geometry && el.geometry.length > 0
+        (el.type === "way" || el.type === "relation") &&
+        el.geometry &&
+        el.geometry.length > 0
     )
     .map(
       (el: {

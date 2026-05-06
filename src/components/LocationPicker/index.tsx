@@ -1,12 +1,37 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import AddressSearch from "@/components/AddressSearch";
 import { fetchBuildingFootprints, type BuildingFootprint } from "@/lib/overpass";
 import SelectionMap from "./SelectionMap";
 import StreetViewPane from "./StreetViewPane";
 import Aerial3DPane from "./Aerial3DPane";
 import { centroidOf, SESSION_KEY, type SelectedLocation } from "./types";
+
+/** Pure heuristic: nearest building (by closest vertex) to a target lat/lng. */
+function nearestBuildingTo(
+  lat: number,
+  lng: number,
+  buildings: BuildingFootprint[],
+): BuildingFootprint | null {
+  if (buildings.length === 0) return null;
+  let best: BuildingFootprint | null = null;
+  let bestDist = Infinity;
+  for (const b of buildings) {
+    let minDist = Infinity;
+    for (const [bLat, bLng] of b.coords) {
+      const dx = bLat - lat;
+      const dy = bLng - lng;
+      const d = dx * dx + dy * dy;
+      if (d < minDist) minDist = d;
+    }
+    if (minDist < bestDist) {
+      bestDist = minDist;
+      best = b;
+    }
+  }
+  return best;
+}
 
 interface LocationPickerProps {
   /** Restore from sessionStorage (or pass directly) so users don't repeat themselves */
@@ -26,46 +51,32 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
   const [buildingsError, setBuildingsError] = useState<string | null>(null);
   const [selected, setSelected] = useState<BuildingFootprint | null>(initial?.building ?? null);
 
-  // Set to true by handleStreetViewLocation just before it changes pinned, so the
-  // pinned-watching useEffect knows the change came from us — we already fetched
-  // buildings and set the new selection. If we let the useEffect run normally it
-  // would call setSelected(null) and the modal would close.
-  const skipNextPinnedFetch = useRef(false);
-
-  // Whenever the pinned location changes (from external sources only), fetch building footprints
-  useEffect(() => {
-    if (skipNextPinnedFetch.current) {
-      skipNextPinnedFetch.current = false;
-      return;
-    }
-    if (!pinned) {
-      setBuildings([]);
-      setSelected(null);
-      return;
-    }
-    let cancelled = false;
+  /** Fetch buildings around a point and update local state. Centralised so every
+   *  caller (address search, Street View re-pick, initial preload) shares behaviour. */
+  const loadBuildings = useCallback(async (lat: number, lng: number): Promise<BuildingFootprint[]> => {
     setBuildingsLoading(true);
     setBuildingsError(null);
-    setSelected(null);
+    try {
+      const fresh = await fetchBuildingFootprints(lat, lng);
+      setBuildings(fresh);
+      return fresh;
+    } catch {
+      setBuildings([]);
+      setBuildingsError("Couldn't load building outlines for this area.");
+      return [];
+    } finally {
+      setBuildingsLoading(false);
+    }
+  }, []);
 
-    fetchBuildingFootprints(pinned.lat, pinned.lng)
-      .then((b) => {
-        if (cancelled) return;
-        setBuildings(b);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setBuildings([]);
-        setBuildingsError("Couldn't load building outlines for this area. Try a more specific address.");
-      })
-      .finally(() => {
-        if (!cancelled) setBuildingsLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [pinned?.lat, pinned?.lng]);
+  // One-time preload from the `initial` prop (e.g. sessionStorage hand-off from
+  // the home page). All other fetches are explicit, in handlers below.
+  useEffect(() => {
+    if (initial) {
+      void loadBuildings(initial.lat, initial.lng);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Try to extract a postcode from an arbitrary address string. UK postcode pattern.
   const extractPostcode = useCallback((s: string): string => {
@@ -74,15 +85,19 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
   }, []);
 
   const handleAddressSelected = useCallback(
-    (r: { lat: number; lng: number; display: string }) => {
+    async (r: { lat: number; lng: number; display: string }) => {
+      // Set pinned + reset selection synchronously so the UI shows "Location found"
+      // immediately, then fetch buildings explicitly.
       setPinned({
         lat: r.lat,
         lng: r.lng,
         address: r.display,
         postcode: extractPostcode(r.display),
       });
+      setSelected(null);
+      await loadBuildings(r.lat, r.lng);
     },
-    [extractPostcode],
+    [extractPostcode, loadBuildings],
   );
 
   const handleConfirm = () => {
@@ -110,52 +125,27 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
   /**
    * Called when the user navigates Street View to a different location and clicks
    * "My property is here". The pano position can be far from the original postcode
-   * (e.g. 200m down the road) — outside the original 150m Overpass fetch radius.
-   * So we re-fetch building footprints around the new position, then pick the
-   * closest one as the new selection. All three panes update because they're
-   * driven by `selected`.
+   * (200m+ down the road) — outside the original Overpass fetch radius. So we
+   * re-fetch building footprints around the new position, then commit pinned +
+   * selected together so the modal stays open and all three panes re-sync.
+   *
+   * No useEffect-on-pinned exists anymore, so there's nothing to clobber the
+   * selection mid-flight.
    */
   const handleStreetViewLocation = useCallback(
     async ({ lat: newLat, lng: newLng }: { lat: number; lng: number }) => {
-      setBuildingsLoading(true);
-      setBuildingsError(null);
-      try {
-        const fresh = await fetchBuildingFootprints(newLat, newLng);
+      // Fetch first (and update buildings via loadBuildings) — this is awaited so
+      // the React batch below sees the freshest data and commits cleanly.
+      const fresh = await loadBuildings(newLat, newLng);
+      const closest = nearestBuildingTo(newLat, newLng, fresh);
 
-        // Find the closest building from the fresh fetch (nearest-vertex heuristic)
-        let closest: BuildingFootprint | null = null;
-        if (fresh.length > 0) {
-          closest = fresh.reduce<BuildingFootprint | null>((best, b) => {
-            const d = b.coords.reduce((min, [lat, lng]) => {
-              const dx = lat - newLat;
-              const dy = lng - newLng;
-              return Math.min(min, dx * dx + dy * dy);
-            }, Infinity);
-            if (!best) return b;
-            const bestD = best.coords.reduce((min, [lat, lng]) => {
-              const dx = lat - newLat;
-              const dy = lng - newLng;
-              return Math.min(min, dx * dx + dy * dy);
-            }, Infinity);
-            return d < bestD ? b : best;
-          }, null);
-        }
-
-        // Order matters here. The flag must be set BEFORE pinned changes, so the
-        // useEffect (which fires on the very next render after setPinned) knows
-        // to skip its auto-fetch + setSelected(null). Otherwise the modal will
-        // unmount because `selected` becomes null mid-flight.
-        skipNextPinnedFetch.current = true;
-        setBuildings(fresh);
-        setPinned((p) => (p ? { ...p, lat: newLat, lng: newLng } : null));
-        if (closest) setSelected(closest);
-      } catch {
-        setBuildingsError("Couldn't load buildings for this area. Try elsewhere on the map.");
-      } finally {
-        setBuildingsLoading(false);
-      }
+      // Commit pinned coords. No side-effect useEffect to undo this.
+      setPinned((p) => (p ? { ...p, lat: newLat, lng: newLng } : null));
+      // Only overwrite selected if we actually have a candidate — otherwise
+      // keep the prior selection so the modal stays open.
+      if (closest) setSelected(closest);
     },
-    [],
+    [loadBuildings],
   );
 
   // Sizing for the inline (pre-modal) state — Tailwind class on the wrapper.
