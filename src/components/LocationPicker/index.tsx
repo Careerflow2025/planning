@@ -221,22 +221,23 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
       )}
 
       {/* ═══════════════════════════════════════════════════════════
-          FULLSCREEN MODAL — vertical stack of 3 big edge-to-edge panes.
-          User scrolls down through Map → Street View → 3D Aerial.
+          FULLSCREEN MODAL — all three panes visible at once, no scroll.
+          Layout: Map full-width on top, Street View + 3D Aerial split
+          50/50 on the bottom. The whole thing fits in 100vh.
           ═══════════════════════════════════════════════════════════ */}
       {pinned && selected && selectedCentroid && (
         <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-[stepIn_0.25s_ease-out]">
-          {/* Sticky top bar */}
-          <header className="sticky top-0 z-[20] flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-white shadow-sm">
+          {/* Top bar */}
+          <header className="flex-shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 border-b border-border bg-white shadow-sm">
             <div className="flex items-center gap-2 min-w-0 flex-1">
-              <div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center flex-shrink-0">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="w-7 h-7 rounded-full bg-green-100 text-green-700 flex items-center justify-center flex-shrink-0">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                 </svg>
               </div>
               <div className="min-w-0">
-                <p className="font-semibold text-sm">Confirm your property</p>
-                <p className="text-xs text-muted truncate">{pinned.address}</p>
+                <p className="font-semibold text-sm leading-tight">Confirm your property</p>
+                <p className="text-xs text-muted truncate leading-tight">{pinned.address}</p>
               </div>
             </div>
             <button
@@ -250,10 +251,11 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
             </button>
           </header>
 
-          {/* Scrollable body — three full-width vertical panes */}
-          <div className="flex-1 overflow-y-auto">
-            {/* Pane 1 — Selection Map */}
-            <section className="w-full h-[80vh] relative">
+          {/* Body — three panes always visible. Top = Map (full width).
+              Bottom = Street View + 3D Aerial split 50/50. */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            {/* Top half — Map */}
+            <section className="relative w-full h-1/2 border-b border-border">
               <div className="absolute top-3 left-3 z-[15] bg-white rounded-lg shadow-md px-3 py-1.5 text-xs font-bold pointer-events-none flex items-center gap-1.5">
                 🗺 Map — click any building to select it
               </div>
@@ -267,26 +269,26 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
               />
             </section>
 
-            {/* Pane 2 — Street View (interactive) */}
-            <section className="w-full h-[80vh] border-t border-border">
-              <StreetViewPane
-                lat={selectedCentroid.lat}
-                lng={selectedCentroid.lng}
-                onLocationConfirmed={handleStreetViewLocation}
-              />
-            </section>
-
-            {/* Pane 3 — 3D Aerial */}
-            <section className="w-full h-[80vh] border-t border-border">
-              <Aerial3DPane
-                lat={selectedCentroid.lat}
-                lng={selectedCentroid.lng}
-                address={pinned.address}
-              />
+            {/* Bottom half — Street View + 3D Aerial side by side */}
+            <section className="relative w-full h-1/2 grid grid-cols-1 md:grid-cols-2">
+              <div className="relative min-h-0 border-r border-border">
+                <StreetViewPane
+                  lat={selectedCentroid.lat}
+                  lng={selectedCentroid.lng}
+                  onLocationConfirmed={handleStreetViewLocation}
+                />
+              </div>
+              <div className="relative min-h-0 border-t md:border-t-0 border-border">
+                <Aerial3DPane
+                  lat={selectedCentroid.lat}
+                  lng={selectedCentroid.lng}
+                  address={pinned.address}
+                />
+              </div>
             </section>
 
             {buildingsLoading && (
-              <div className="sticky bottom-[88px] left-1/2 -translate-x-1/2 z-[15] bg-blue-100 border border-blue-300 text-blue-800 text-xs font-semibold rounded-full px-3 py-1.5 shadow-md w-fit mx-auto flex items-center gap-2">
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[20] bg-blue-100 border border-blue-300 text-blue-800 text-xs font-semibold rounded-full px-4 py-2 shadow-lg flex items-center gap-2">
                 <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
                   <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
                   <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
@@ -296,24 +298,24 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
             )}
           </div>
 
-          {/* Sticky bottom confirm bar */}
-          <footer className="sticky bottom-0 z-[20] border-t border-border bg-gradient-to-r from-green-50 to-emerald-50 px-5 py-3 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
-            <p className="text-sm text-green-900 flex-1 min-w-0">
+          {/* Bottom confirm bar — fixed height, always visible */}
+          <footer className="flex-shrink-0 border-t border-border bg-gradient-to-r from-green-50 to-emerald-50 px-5 py-2.5 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
+            <p className="text-xs text-green-800 flex-1 min-w-0 hidden sm:block">
               <span className="font-semibold">Is this your property?</span>{" "}
               <span className="text-green-700">
-                Click another building on the map, or navigate Street View and tap &quot;My property is here&quot;.
+                Click another building on the map, or use &quot;My property is here&quot; in Street View.
               </span>
             </p>
             <div className="flex gap-2 flex-shrink-0">
               <button
                 onClick={handleReset}
-                className="px-4 py-2.5 border border-border rounded-xl font-medium text-gray-700 hover:bg-gray-50 transition-colors text-sm"
+                className="px-4 py-2 border border-border rounded-lg font-medium text-gray-700 hover:bg-gray-50 transition-colors text-sm"
               >
                 Try again
               </button>
               <button
                 onClick={handleConfirm}
-                className="px-6 py-2.5 bg-accent text-white rounded-xl font-semibold hover:bg-accent-hover transition-colors flex items-center justify-center gap-2 shadow-md text-sm"
+                className="px-5 py-2 bg-accent text-white rounded-lg font-semibold hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 shadow-md text-sm"
               >
                 Yes, this is my property
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
