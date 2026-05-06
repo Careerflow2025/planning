@@ -157,108 +157,16 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
         </div>
       )}
 
-      {/* ── Mobile tab switcher (only shown after a building is selected) ── */}
-      {pinned && selected && (
-        <div className="md:hidden flex rounded-lg border border-border overflow-hidden">
-          {(["map", "3d", "aerial"] as MobileTab[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setMobileTab(t)}
-              className={`flex-1 py-2 text-xs font-semibold transition-colors ${
-                mobileTab === t ? "bg-primary text-white" : "bg-white text-muted hover:bg-gray-50"
-              }`}
-            >
-              {t === "map" && "🗺 Map"}
-              {t === "3d" && "🎬 3D"}
-              {t === "aerial" && "🛰 Aerial"}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ── Pane grid ── */}
-      {pinned && (
-        <div
-          className={`grid gap-3 transition-all duration-300 ${
-            selected
-              ? "md:grid-cols-2 xl:grid-cols-3"
-              : "grid-cols-1"
-          }`}
-        >
-          {/* Pane 1 — Selection map (always visible) */}
-          <div
-            className={`${selected ? "" : ""} ${mapHeight} ${
-              selected && mobileTab !== "map" ? "hidden md:block" : ""
-            }`}
-          >
-            <SelectionMap
-              lat={pinned.lat}
-              lng={pinned.lng}
-              buildings={buildings}
-              selectedBuilding={selected}
-              onBuildingSelected={setSelected}
-            />
-          </div>
-
-          {/* Pane 2 — 3D / Street View (only after selection) */}
-          {selected && selectedCentroid && (
-            <div
-              className={`${mapHeight} animate-[stepIn_0.3s_ease-out] ${
-                mobileTab !== "3d" ? "hidden md:block" : ""
-              }`}
-            >
-              <View3D
-                lat={selectedCentroid.lat}
-                lng={selectedCentroid.lng}
-                address={pinned.address}
-              />
-            </div>
-          )}
-
-          {/* Pane 3 — Bird's eye (only after selection) */}
-          {selected && (
-            <div
-              className={`${mapHeight} xl:col-span-1 md:col-span-2 animate-[stepIn_0.3s_ease-out] ${
-                mobileTab !== "aerial" ? "hidden md:block" : ""
-              }`}
-            >
-              <BirdsEyeMap building={selected} height={paneCssHeight} />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Confirm bar ── */}
-      {pinned && selected && (
-        <div className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-xl p-4 space-y-3 animate-[stepIn_0.3s_ease-out]">
-          <div className="flex items-start gap-2">
-            <svg className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-            </svg>
-            <div>
-              <p className="font-semibold text-sm text-green-900">Is this your property?</p>
-              <p className="text-xs text-green-700 mt-0.5">
-                Walk around in any pane to verify — you can drag inside Street View, or click another building on the map to switch.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <button
-              onClick={handleConfirm}
-              className="flex-1 py-3 bg-accent text-white rounded-xl font-semibold hover:bg-accent-hover transition-colors flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
-            >
-              Yes, this is my property
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-              </svg>
-            </button>
-            <button
-              onClick={handleReset}
-              className="py-3 px-5 border-2 border-border rounded-xl font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              No, try again
-            </button>
-          </div>
+      {/* ── Inline selection map (only when no building selected yet) ── */}
+      {pinned && !selected && (
+        <div className={mapHeight}>
+          <SelectionMap
+            lat={pinned.lat}
+            lng={pinned.lng}
+            buildings={buildings}
+            selectedBuilding={null}
+            onBuildingSelected={setSelected}
+          />
         </div>
       )}
 
@@ -272,6 +180,107 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
         <p className="text-xs text-muted text-center">
           No building outlines for this area. Try a postcode for a built-up area.
         </p>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════
+          FULLSCREEN MODAL — opens automatically when a building is selected.
+          3 big panes side-by-side on desktop, swipeable tabs on mobile.
+          ═══════════════════════════════════════════════════════════ */}
+      {pinned && selected && selectedCentroid && (
+        <div className="fixed inset-0 z-[100] bg-black/40 backdrop-blur-sm flex items-stretch justify-center p-2 md:p-4">
+          <div className="bg-white w-full max-w-7xl rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-[stepIn_0.25s_ease-out]">
+            {/* Modal header */}
+            <header className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-white">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center flex-shrink-0">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                </div>
+                <div className="min-w-0">
+                  <p className="font-semibold text-sm">Confirm your property</p>
+                  <p className="text-xs text-muted truncate">{pinned.address}</p>
+                </div>
+              </div>
+              <button
+                onClick={handleReset}
+                className="flex-shrink-0 p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </header>
+
+            {/* Mobile tab bar (only on small screens) */}
+            <div className="md:hidden flex border-b border-border">
+              {(["map", "3d", "aerial"] as MobileTab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setMobileTab(t)}
+                  className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${
+                    mobileTab === t ? "bg-primary text-white" : "bg-white text-muted hover:bg-gray-50"
+                  }`}
+                >
+                  {t === "map" && "🗺 Map"}
+                  {t === "3d" && "🎬 3D / Street"}
+                  {t === "aerial" && "🛰 Aerial"}
+                </button>
+              ))}
+            </div>
+
+            {/* Pane grid */}
+            <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-2 p-2 md:p-3 min-h-0">
+              <div className={`${mobileTab !== "map" ? "hidden md:block" : ""} min-h-0`}>
+                <SelectionMap
+                  lat={pinned.lat}
+                  lng={pinned.lng}
+                  buildings={buildings}
+                  selectedBuilding={selected}
+                  onBuildingSelected={setSelected}
+                />
+              </div>
+              <div className={`${mobileTab !== "3d" ? "hidden md:block" : ""} min-h-0`}>
+                <View3D
+                  lat={selectedCentroid.lat}
+                  lng={selectedCentroid.lng}
+                  address={pinned.address}
+                />
+              </div>
+              <div className={`${mobileTab !== "aerial" ? "hidden md:block" : ""} min-h-0`}>
+                <BirdsEyeMap building={selected} height={paneCssHeight} />
+              </div>
+            </div>
+
+            {/* Footer / confirm bar */}
+            <footer className="border-t border-border bg-gradient-to-r from-green-50 to-emerald-50 px-5 py-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              <p className="text-sm text-green-900 flex-1 min-w-0">
+                <span className="font-semibold">Is this your property?</span>{" "}
+                <span className="text-green-700">
+                  Walk around any pane to verify, or click another building on the map.
+                </span>
+              </p>
+              <div className="flex gap-2 flex-shrink-0">
+                <button
+                  onClick={handleReset}
+                  className="px-4 py-2.5 border border-border rounded-xl font-medium text-gray-700 hover:bg-gray-50 transition-colors text-sm"
+                >
+                  Try again
+                </button>
+                <button
+                  onClick={handleConfirm}
+                  className="px-6 py-2.5 bg-accent text-white rounded-xl font-semibold hover:bg-accent-hover transition-colors flex items-center justify-center gap-2 shadow-md text-sm"
+                >
+                  Yes, this is my property
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                  </svg>
+                </button>
+              </div>
+            </footer>
+          </div>
+        </div>
       )}
     </div>
   );

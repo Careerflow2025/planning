@@ -83,9 +83,13 @@ export default function BirdsEyeMap({ building, height = "100%" }: BirdsEyeMapPr
 
     // Use synchronous fitBounds (not animated flyToBounds) — animations during a fresh
     // mount can cause Leaflet to throw if the container isn't fully laid out yet
+    // Tight zoom — minimal padding so the building fills the pane.
+    // Then push zoom up to max so buildings are clearly distinguishable from
+    // the wider "selection map" pane next to it.
     map.fitBounds(polygon.getBounds(), {
-      padding: [16, 16],
+      padding: [4, 4],
       animate: false,
+      maxZoom: 21,
     });
   }, [building]);
 
