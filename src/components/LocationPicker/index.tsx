@@ -5,7 +5,7 @@ import AddressSearch from "@/components/AddressSearch";
 import { fetchBuildingFootprints, type BuildingFootprint } from "@/lib/overpass";
 import SelectionMap from "./SelectionMap";
 import StreetViewPane from "./StreetViewPane";
-import Aerial3DPane from "./Aerial3DPane";
+import PropertyDataCard from "./PropertyDataCard";
 import { centroidOf, SESSION_KEY, type SelectedLocation } from "./types";
 
 /** Pure heuristic: nearest building (by closest vertex) to a target lat/lng. */
@@ -286,10 +286,12 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
                 />
               </div>
               <div className="relative min-h-0 border-t md:border-t-0 border-border">
-                <Aerial3DPane
+                <PropertyDataCard
+                  building={selected}
+                  address={pinned.address}
+                  postcode={pinned.postcode}
                   lat={selectedCentroid.lat}
                   lng={selectedCentroid.lng}
-                  address={pinned.address}
                 />
               </div>
             </section>
