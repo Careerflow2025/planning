@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AddressSearch from "@/components/AddressSearch";
 import { fetchBuildingFootprints, type BuildingFootprint } from "@/lib/overpass";
 import SelectionMap from "./SelectionMap";
@@ -26,8 +26,18 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
   const [buildingsError, setBuildingsError] = useState<string | null>(null);
   const [selected, setSelected] = useState<BuildingFootprint | null>(initial?.building ?? null);
 
-  // Whenever the pinned location changes, fetch building footprints
+  // Set to true by handleStreetViewLocation just before it changes pinned, so the
+  // pinned-watching useEffect knows the change came from us — we already fetched
+  // buildings and set the new selection. If we let the useEffect run normally it
+  // would call setSelected(null) and the modal would close.
+  const skipNextPinnedFetch = useRef(false);
+
+  // Whenever the pinned location changes (from external sources only), fetch building footprints
   useEffect(() => {
+    if (skipNextPinnedFetch.current) {
+      skipNextPinnedFetch.current = false;
+      return;
+    }
     if (!pinned) {
       setBuildings([]);
       setSelected(null);
@@ -111,12 +121,11 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
       setBuildingsError(null);
       try {
         const fresh = await fetchBuildingFootprints(newLat, newLng);
-        setBuildings(fresh);
-        setPinned((p) => (p ? { ...p, lat: newLat, lng: newLng } : null));
+
+        // Find the closest building from the fresh fetch (nearest-vertex heuristic)
+        let closest: BuildingFootprint | null = null;
         if (fresh.length > 0) {
-          const closest = fresh.reduce<BuildingFootprint | null>((best, b) => {
-            // Reuse logic without importing findClosestBuilding here — straightforward
-            // nearest-vertex heuristic, fine for short distances.
+          closest = fresh.reduce<BuildingFootprint | null>((best, b) => {
             const d = b.coords.reduce((min, [lat, lng]) => {
               const dx = lat - newLat;
               const dy = lng - newLng;
@@ -130,8 +139,16 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
             }, Infinity);
             return d < bestD ? b : best;
           }, null);
-          if (closest) setSelected(closest);
         }
+
+        // Order matters here. The flag must be set BEFORE pinned changes, so the
+        // useEffect (which fires on the very next render after setPinned) knows
+        // to skip its auto-fetch + setSelected(null). Otherwise the modal will
+        // unmount because `selected` becomes null mid-flight.
+        skipNextPinnedFetch.current = true;
+        setBuildings(fresh);
+        setPinned((p) => (p ? { ...p, lat: newLat, lng: newLng } : null));
+        if (closest) setSelected(closest);
       } catch {
         setBuildingsError("Couldn't load buildings for this area. Try elsewhere on the map.");
       } finally {
