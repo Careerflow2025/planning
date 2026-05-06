@@ -47,14 +47,21 @@ export default function BirdsEyeMap({ building, height = "100%" }: BirdsEyeMapPr
 
     setTimeout(() => map.invalidateSize(), 100);
 
+    // Auto-resize when the container changes size
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => map.invalidateSize());
+    });
+    if (containerRef.current) ro.observe(containerRef.current);
+
     return () => {
+      ro.disconnect();
       map.remove();
       mapRef.current = null;
       polygonRef.current = null;
     };
   }, []);
 
-  // Render the building polygon and fit bounds tightly
+  // Render the building polygon and fit bounds tightly (no animation — fitBounds is sync)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -74,9 +81,11 @@ export default function BirdsEyeMap({ building, height = "100%" }: BirdsEyeMapPr
     polygon.addTo(map);
     polygonRef.current = polygon;
 
-    map.flyToBounds(polygon.getBounds(), {
+    // Use synchronous fitBounds (not animated flyToBounds) — animations during a fresh
+    // mount can cause Leaflet to throw if the container isn't fully laid out yet
+    map.fitBounds(polygon.getBounds(), {
       padding: [16, 16],
-      duration: 0.6,
+      animate: false,
     });
   }, [building]);
 

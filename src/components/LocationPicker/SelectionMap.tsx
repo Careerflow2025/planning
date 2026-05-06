@@ -66,7 +66,15 @@ export default function SelectionMap({
     // Force a reflow after mount so tiles paint correctly
     setTimeout(() => map.invalidateSize(), 100);
 
+    // Auto-resize when the container changes size (e.g. layout shifts from 1-col to 3-col)
+    const ro = new ResizeObserver(() => {
+      // Schedule on next frame to avoid recursive resize loops
+      requestAnimationFrame(() => map.invalidateSize());
+    });
+    if (containerRef.current) ro.observe(containerRef.current);
+
     return () => {
+      ro.disconnect();
       map.remove();
       mapRef.current = null;
     };

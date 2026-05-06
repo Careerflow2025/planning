@@ -100,9 +100,11 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
     setSelected(null);
   };
 
-  // Sizing: variant=hero is fuller, variant=wizard fits inside a wizard step container
+  // Sizing: variant=hero is fuller, variant=wizard fits inside a wizard step container.
+  // mapHeight is a Tailwind class for the wrapper. paneCss is a real CSS value passed to
+  // child components that use `style={{ height }}`.
   const mapHeight = variant === "hero" ? "h-[420px]" : "h-[360px]";
-  const paneHeight = variant === "hero" ? "h-[280px]" : "h-[240px]";
+  const paneCssHeight = "100%";
 
   // Compute the centre point we feed into the 3D + bird's-eye panes
   const selectedCentroid = selected ? centroidOf(selected.coords) : null;
@@ -220,7 +222,7 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
                 mobileTab !== "aerial" ? "hidden md:block" : ""
               }`}
             >
-              <BirdsEyeMap building={selected} height={paneHeight} />
+              <BirdsEyeMap building={selected} height={paneCssHeight} />
             </div>
           )}
         </div>
