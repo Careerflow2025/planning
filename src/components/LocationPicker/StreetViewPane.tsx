@@ -2,18 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { isGoogleMapsConfigured, loadMapsLibrary } from "@/lib/google-maps-loader";
-import { findClosestBuilding, type BuildingFootprint } from "@/lib/overpass";
 
 interface StreetViewPaneProps {
   /** Current target lat/lng (centroid of the selected building). The pano starts here. */
   lat: number;
   lng: number;
-  /** All known building footprints in the area — used by the "select here" button to find the
-   *  closest one to the user's current Street View position. */
-  buildings: BuildingFootprint[];
-  /** Called when the user navigates Street View to a different building and clicks
-   *  "My property is here". The parent updates the global selection. */
-  onBuildingSelected: (b: BuildingFootprint) => void;
+  /** Called when the user navigates Street View elsewhere and clicks
+   *  "My property is here". The parent re-fetches buildings around the new
+   *  pano position and updates the selection accordingly. */
+  onLocationConfirmed: (pos: { lat: number; lng: number }) => void;
 }
 
 /**
@@ -27,8 +24,7 @@ interface StreetViewPaneProps {
 export default function StreetViewPane({
   lat,
   lng,
-  buildings,
-  onBuildingSelected,
+  onLocationConfirmed,
 }: StreetViewPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const panoRef = useRef<google.maps.StreetViewPanorama | null>(null);
@@ -92,10 +88,7 @@ export default function StreetViewPane({
   }, [lat, lng]);
 
   const handleSelectHere = () => {
-    if (buildings.length === 0) return;
-    const pos = currentPosRef.current;
-    const b = findClosestBuilding(pos.lat, pos.lng, buildings);
-    if (b) onBuildingSelected(b);
+    onLocationConfirmed({ ...currentPosRef.current });
   };
 
   if (!configured) {

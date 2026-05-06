@@ -17,8 +17,6 @@ interface LocationPickerProps {
   variant?: "hero" | "wizard";
 }
 
-type MobileTab = "map" | "3d" | "aerial";
-
 export default function LocationPicker({ initial, onConfirm, variant = "hero" }: LocationPickerProps) {
   const [pinned, setPinned] = useState<{ lat: number; lng: number; address: string; postcode: string } | null>(
     initial ? { lat: initial.lat, lng: initial.lng, address: initial.address, postcode: initial.postcode } : null,
@@ -27,7 +25,6 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
   const [buildingsLoading, setBuildingsLoading] = useState(false);
   const [buildingsError, setBuildingsError] = useState<string | null>(null);
   const [selected, setSelected] = useState<BuildingFootprint | null>(initial?.building ?? null);
-  const [mobileTab, setMobileTab] = useState<MobileTab>("map");
 
   // Whenever the pinned location changes, fetch building footprints
   useEffect(() => {
@@ -99,6 +96,50 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
   const handleReset = () => {
     setSelected(null);
   };
+
+  /**
+   * Called when the user navigates Street View to a different location and clicks
+   * "My property is here". The pano position can be far from the original postcode
+   * (e.g. 200m down the road) — outside the original 150m Overpass fetch radius.
+   * So we re-fetch building footprints around the new position, then pick the
+   * closest one as the new selection. All three panes update because they're
+   * driven by `selected`.
+   */
+  const handleStreetViewLocation = useCallback(
+    async ({ lat: newLat, lng: newLng }: { lat: number; lng: number }) => {
+      setBuildingsLoading(true);
+      setBuildingsError(null);
+      try {
+        const fresh = await fetchBuildingFootprints(newLat, newLng);
+        setBuildings(fresh);
+        setPinned((p) => (p ? { ...p, lat: newLat, lng: newLng } : null));
+        if (fresh.length > 0) {
+          const closest = fresh.reduce<BuildingFootprint | null>((best, b) => {
+            // Reuse logic without importing findClosestBuilding here — straightforward
+            // nearest-vertex heuristic, fine for short distances.
+            const d = b.coords.reduce((min, [lat, lng]) => {
+              const dx = lat - newLat;
+              const dy = lng - newLng;
+              return Math.min(min, dx * dx + dy * dy);
+            }, Infinity);
+            if (!best) return b;
+            const bestD = best.coords.reduce((min, [lat, lng]) => {
+              const dx = lat - newLat;
+              const dy = lng - newLng;
+              return Math.min(min, dx * dx + dy * dy);
+            }, Infinity);
+            return d < bestD ? b : best;
+          }, null);
+          if (closest) setSelected(closest);
+        }
+      } catch {
+        setBuildingsError("Couldn't load buildings for this area. Try elsewhere on the map.");
+      } finally {
+        setBuildingsLoading(false);
+      }
+    },
+    [],
+  );
 
   // Sizing for the inline (pre-modal) state — Tailwind class on the wrapper.
   const mapHeight = variant === "hero" ? "h-[420px]" : "h-[360px]";
@@ -180,108 +221,107 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
       )}
 
       {/* ═══════════════════════════════════════════════════════════
-          FULLSCREEN MODAL — opens automatically when a building is selected.
-          3 big panes side-by-side on desktop, swipeable tabs on mobile.
+          FULLSCREEN MODAL — vertical stack of 3 big edge-to-edge panes.
+          User scrolls down through Map → Street View → 3D Aerial.
           ═══════════════════════════════════════════════════════════ */}
       {pinned && selected && selectedCentroid && (
-        <div className="fixed inset-0 z-[100] bg-black/40 backdrop-blur-sm flex items-stretch justify-center p-2 md:p-4">
-          <div className="bg-white w-full max-w-7xl rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-[stepIn_0.25s_ease-out]">
-            {/* Modal header */}
-            <header className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-white">
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                <div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center flex-shrink-0">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                  </svg>
-                </div>
-                <div className="min-w-0">
-                  <p className="font-semibold text-sm">Confirm your property</p>
-                  <p className="text-xs text-muted truncate">{pinned.address}</p>
-                </div>
+        <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-[stepIn_0.25s_ease-out]">
+          {/* Sticky top bar */}
+          <header className="sticky top-0 z-[20] flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-white shadow-sm">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
               </div>
+              <div className="min-w-0">
+                <p className="font-semibold text-sm">Confirm your property</p>
+                <p className="text-xs text-muted truncate">{pinned.address}</p>
+              </div>
+            </div>
+            <button
+              onClick={handleReset}
+              className="flex-shrink-0 p-2 rounded-lg hover:bg-gray-100 transition-colors"
+              aria-label="Close"
+            >
+              <svg className="w-5 h-5 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </header>
+
+          {/* Scrollable body — three full-width vertical panes */}
+          <div className="flex-1 overflow-y-auto">
+            {/* Pane 1 — Selection Map */}
+            <section className="w-full h-[80vh] relative">
+              <div className="absolute top-3 left-3 z-[15] bg-white rounded-lg shadow-md px-3 py-1.5 text-xs font-bold pointer-events-none flex items-center gap-1.5">
+                🗺 Map — click any building to select it
+              </div>
+              <SelectionMap
+                lat={pinned.lat}
+                lng={pinned.lng}
+                buildings={buildings}
+                selectedBuilding={selected}
+                onBuildingSelected={setSelected}
+                showHint={false}
+              />
+            </section>
+
+            {/* Pane 2 — Street View (interactive) */}
+            <section className="w-full h-[80vh] border-t border-border">
+              <StreetViewPane
+                lat={selectedCentroid.lat}
+                lng={selectedCentroid.lng}
+                onLocationConfirmed={handleStreetViewLocation}
+              />
+            </section>
+
+            {/* Pane 3 — 3D Aerial */}
+            <section className="w-full h-[80vh] border-t border-border">
+              <Aerial3DPane
+                lat={selectedCentroid.lat}
+                lng={selectedCentroid.lng}
+                address={pinned.address}
+              />
+            </section>
+
+            {buildingsLoading && (
+              <div className="sticky bottom-[88px] left-1/2 -translate-x-1/2 z-[15] bg-blue-100 border border-blue-300 text-blue-800 text-xs font-semibold rounded-full px-3 py-1.5 shadow-md w-fit mx-auto flex items-center gap-2">
+                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                  <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+                </svg>
+                Updating to new location…
+              </div>
+            )}
+          </div>
+
+          {/* Sticky bottom confirm bar */}
+          <footer className="sticky bottom-0 z-[20] border-t border-border bg-gradient-to-r from-green-50 to-emerald-50 px-5 py-3 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
+            <p className="text-sm text-green-900 flex-1 min-w-0">
+              <span className="font-semibold">Is this your property?</span>{" "}
+              <span className="text-green-700">
+                Click another building on the map, or navigate Street View and tap &quot;My property is here&quot;.
+              </span>
+            </p>
+            <div className="flex gap-2 flex-shrink-0">
               <button
                 onClick={handleReset}
-                className="flex-shrink-0 p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                aria-label="Close"
+                className="px-4 py-2.5 border border-border rounded-xl font-medium text-gray-700 hover:bg-gray-50 transition-colors text-sm"
               >
-                <svg className="w-5 h-5 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                Try again
+              </button>
+              <button
+                onClick={handleConfirm}
+                className="px-6 py-2.5 bg-accent text-white rounded-xl font-semibold hover:bg-accent-hover transition-colors flex items-center justify-center gap-2 shadow-md text-sm"
+              >
+                Yes, this is my property
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                 </svg>
               </button>
-            </header>
-
-            {/* Mobile tab bar (only on small screens) */}
-            <div className="md:hidden flex border-b border-border">
-              {(["map", "3d", "aerial"] as MobileTab[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setMobileTab(t)}
-                  className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${
-                    mobileTab === t ? "bg-primary text-white" : "bg-white text-muted hover:bg-gray-50"
-                  }`}
-                >
-                  {t === "map" && "🗺 Map"}
-                  {t === "3d" && "🚶 Street View"}
-                  {t === "aerial" && "🛰 3D Aerial"}
-                </button>
-              ))}
             </div>
-
-            {/* Pane grid */}
-            <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-2 p-2 md:p-3 min-h-0">
-              <div className={`${mobileTab !== "map" ? "hidden md:block" : ""} min-h-0`}>
-                <SelectionMap
-                  lat={pinned.lat}
-                  lng={pinned.lng}
-                  buildings={buildings}
-                  selectedBuilding={selected}
-                  onBuildingSelected={setSelected}
-                />
-              </div>
-              <div className={`${mobileTab !== "3d" ? "hidden md:block" : ""} min-h-0`}>
-                <StreetViewPane
-                  lat={selectedCentroid.lat}
-                  lng={selectedCentroid.lng}
-                  buildings={buildings}
-                  onBuildingSelected={setSelected}
-                />
-              </div>
-              <div className={`${mobileTab !== "aerial" ? "hidden md:block" : ""} min-h-0`}>
-                <Aerial3DPane
-                  lat={selectedCentroid.lat}
-                  lng={selectedCentroid.lng}
-                  address={pinned.address}
-                />
-              </div>
-            </div>
-
-            {/* Footer / confirm bar */}
-            <footer className="border-t border-border bg-gradient-to-r from-green-50 to-emerald-50 px-5 py-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              <p className="text-sm text-green-900 flex-1 min-w-0">
-                <span className="font-semibold">Is this your property?</span>{" "}
-                <span className="text-green-700">
-                  Click a building on the map, or navigate Street View and tap &quot;My property is here&quot;.
-                </span>
-              </p>
-              <div className="flex gap-2 flex-shrink-0">
-                <button
-                  onClick={handleReset}
-                  className="px-4 py-2.5 border border-border rounded-xl font-medium text-gray-700 hover:bg-gray-50 transition-colors text-sm"
-                >
-                  Try again
-                </button>
-                <button
-                  onClick={handleConfirm}
-                  className="px-6 py-2.5 bg-accent text-white rounded-xl font-semibold hover:bg-accent-hover transition-colors flex items-center justify-center gap-2 shadow-md text-sm"
-                >
-                  Yes, this is my property
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                  </svg>
-                </button>
-              </div>
-            </footer>
-          </div>
+          </footer>
         </div>
       )}
     </div>
