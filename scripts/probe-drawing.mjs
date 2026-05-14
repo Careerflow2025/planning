@@ -36,8 +36,11 @@ function check(name, cond, detail = "") {
 }
 
 async function openPicker(page) {
-  await page.goto(URL, { waitUntil: "domcontentloaded" });
-  const inp = await page.waitForSelector('input[placeholder*="postcode" i]');
+  log("    [openPicker] navigating...");
+  await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 25000 });
+  log("    [openPicker] page DOM loaded");
+  const inp = await page.waitForSelector('input[placeholder*="postcode" i]', { timeout: 10000 });
+  log("    [openPicker] input found");
   await inp.fill(POSTCODE);
   await page.waitForFunction(
     (pc) =>
@@ -53,20 +56,38 @@ async function openPicker(page) {
     );
     btn?.click();
   }, POSTCODE);
+  log("    [openPicker] postcode picked — waiting for map...");
   await page.waitForFunction(() => !!document.querySelector(".mapboxgl-map"), { timeout: 12000 });
-  await page.waitForTimeout(1500);
+  log("    [openPicker] map mounted — waiting for status: ready");
+  // Wait for the map's loading overlay to disappear (status flips to ready).
+  await page
+    .waitForFunction(
+      () => {
+        const ov = document.querySelector(
+          ".absolute.inset-0.flex.items-center.justify-center.bg-gray-50",
+        );
+        return !ov || !ov.offsetParent;
+      },
+      null,
+      { timeout: 20000 },
+    )
+    .catch(() => log("    [openPicker] loading overlay didn't clear; continuing anyway"));
+  await page.waitForTimeout(800);
 }
 
 async function enterDrawMode(page) {
-  await page.evaluate(() => {
+  const clicked = await page.evaluate(() => {
     const b = [...document.querySelectorAll("button")].find(
       (x) => x.textContent?.trim().replace(/\s+/g, " ") === "✏️ Draw",
     );
-    b?.click();
+    if (!b) return false;
+    b.click();
+    return true;
   });
-  await page.waitForFunction(() => document.querySelector(".mapboxgl-map.mode-draw_polygon"), {
-    timeout: 10000,
-  });
+  log(`    [enterDrawMode] draw button clicked: ${clicked}`);
+  // Give the map's status to flip to ready (it triggers the useEffect that
+  // attaches MapboxDraw). Up to 8s.
+  await page.waitForTimeout(2000);
 }
 
 async function clickCorner(page, x, y) {
@@ -208,11 +229,25 @@ async function runScenario(label, cornerCount, useFirstVertexToClose, browser) {
   }
 }
 
+const SCENARIOS_RAW = process.argv.slice(2);
+const scenarios =
+  SCENARIOS_RAW.length > 0
+    ? SCENARIOS_RAW
+    : ["3", "4", "8", "first-vertex"];
+
 const browser = await chromium.launch({ headless: true });
-await runScenario("3 corners", 3, false, browser);
-await runScenario("4 corners", 4, false, browser);
-await runScenario("8 corners", 8, false, browser);
-await runScenario("3 corners + first-vertex close", 3, true, browser);
+for (const s of scenarios) {
+  if (s === "first-vertex") {
+    await runScenario("3 corners + first-vertex close", 3, true, browser);
+  } else {
+    const n = parseInt(s, 10);
+    if (Number.isFinite(n) && n >= 3) {
+      await runScenario(`${n} corners`, n, false, browser);
+    }
+  }
+  // Space out runs to avoid postcodes.io / Mapillary rate-limit
+  await new Promise((r) => setTimeout(r, 4000));
+}
 await browser.close();
 
 console.log("\n──────────────");
