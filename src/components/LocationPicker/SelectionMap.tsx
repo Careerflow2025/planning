@@ -448,6 +448,10 @@ export default function SelectionMap({
   // draw.create listener are set up once at map load (see the `load` handler
   // above) so the first click after switching to Draw mode is captured
   // immediately — no lazy-import race.
+  //
+  // Depend on `status` too: a user can hit the Draw button BEFORE the map
+  // finishes loading. We bail when not ready, but when status flips to
+  // "ready" the effect must re-run so we attach Draw retroactively.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapLoadedRef.current || !drawRef.current) return;
@@ -467,7 +471,7 @@ export default function SelectionMap({
       drawAttachedRef.current = false;
       setVertexCount(0);
     }
-  }, [mode]);
+  }, [mode, status]);
 
   if (!configured) {
     return (
