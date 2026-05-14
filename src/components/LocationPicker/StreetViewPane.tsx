@@ -71,7 +71,15 @@ export default function StreetViewPane({
           container: containerRef.current,
           accessToken: process.env.NEXT_PUBLIC_MAPILLARY_TOKEN!,
           imageId: nearest.id,
-          component: { cover: false },
+          component: {
+            cover: false,
+            // Hide Mapillary branding + image date label
+            attribution: false,
+            // Keep the helpful navigation arrows + zoom + sequence stepper
+            direction: true,
+            sequence: true,
+            zoom: true,
+          },
         });
         currentPosRef.current = { lat: nearest.lat, lng: nearest.lng };
         viewer.on("image", async () => {

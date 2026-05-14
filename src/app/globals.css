@@ -141,3 +141,14 @@ select:focus-visible {
 button:active:not(:disabled) {
   transform: scale(0.98);
 }
+
+/* ── Mapillary viewer chrome: hide brand watermark + image-date attribution ── */
+.mapillary-js .mapillaryjs-attribution,
+.mapillary-js .mapillaryjs-attribution-mapillary,
+.mapillary-js .mapillaryjs-attribution-image,
+.mapillary-js .mapillaryjs-attribution-date {
+  display: none !important;
+}
+.mapillaryjs-attribution {
+  display: none !important;
+}

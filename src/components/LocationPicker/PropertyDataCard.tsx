@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import type { Selection } from "./types";
 
 interface PropertyDataCardProps {
-  /** Current selection — building, pin, or drawn polygon. */
-  selection: Selection;
+  /** Current selection — building, pin, or drawn polygon. `null` while the user
+   *  is still picking; the card renders a placeholder until then. */
+  selection: Selection | null;
   /** The displayed address from the postcode/address search. */
   address: string;
   /** The displayed postcode (may be empty if user searched by address only). */
@@ -43,14 +44,14 @@ export default function PropertyDataCard({
 
   // OSM-tagged building data is only available when the selection is a real
   // OSM polygon. For pin or drawn selections, OSM tags don't apply.
-  const osmBuilding = selection.kind === "building" ? selection.building : null;
+  const osmBuilding = selection?.kind === "building" ? selection.building : null;
 
   // Polygon-based footprint area: works for OSM-tagged buildings AND user-
   // drawn outlines. Bare pins (no polygon) report "—".
   const polygon =
-    selection.kind === "building"
+    selection?.kind === "building"
       ? selection.building.coords
-      : selection.kind === "drawn"
+      : selection?.kind === "drawn"
         ? selection.coords
         : null;
 
@@ -108,8 +109,9 @@ export default function PropertyDataCard({
   const osmAddress = street ? `${street}${tags["addr:city"] ? ", " + tags["addr:city"] : ""}` : null;
 
   // Source label — what the user did to identify the property
-  const sourceLabel =
-    selection.kind === "building"
+  const sourceLabel = !selection
+    ? "Waiting for selection"
+    : selection.kind === "building"
       ? "Selected from outline"
       : selection.kind === "pin"
         ? "Pin dropped"
@@ -129,6 +131,14 @@ export default function PropertyDataCard({
       </div>
 
       <div className="px-5 py-4 space-y-5 text-sm">
+        {!selection && (
+          <div className="rounded-xl border border-blue-200 bg-blue-50 text-blue-900 text-xs px-3 py-2 flex items-start gap-2">
+            <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>Click a building on the map, drop a pin, or draw your outline to fill these details.</span>
+          </div>
+        )}
         {/* Address */}
         <Section label="Address">
           <p className="font-medium leading-tight">{osmAddress ?? truncateAddress(address)}</p>
@@ -145,7 +155,7 @@ export default function PropertyDataCard({
                 <span className="text-sm font-semibold text-muted">m²</span>
               </div>
               <p className="text-xs text-muted mt-0.5">
-                {selection.kind === "drawn"
+                {selection?.kind === "drawn"
                   ? "Calculated from your drawn outline"
                   : "Calculated from the building outline"}
               </p>

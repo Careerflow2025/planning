@@ -214,11 +214,15 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
     [loadBuildings],
   );
 
-  // Sizing for the inline (pre-modal) state — Tailwind class on the wrapper.
-  const mapHeight = variant === "hero" ? "h-[420px]" : "h-[360px]";
-
-  // Compute the centre point we feed into the Street View + data card panes
-  const selectedCentroid = selected ? selectionCentroid(selected) : null;
+  // Centroid to drive Street View + data-card panes. Until the user picks a
+  // building/pin/drawn outline, fall back to the postcode-lookup point so the
+  // 3-pane modal can open immediately after the address is chosen.
+  const effectiveCentroid = selected
+    ? selectionCentroid(selected)
+    : pinned
+      ? { lat: pinned.lat, lng: pinned.lng }
+      : null;
+  void variant; // sizing now driven by the fullscreen modal — variant unused
 
   return (
     <div className="space-y-3">
@@ -268,28 +272,10 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
         </div>
       )}
 
-      {/* ── Inline selection map (only when no building selected yet) ── */}
-      {pinned && !selected && (
-        <div className={mapHeight}>
-          <SelectionMap
-            lat={pinned.lat}
-            lng={pinned.lng}
-            buildings={buildings}
-            selected={null}
-            onSelectionChanged={setSelected}
-          />
-        </div>
-      )}
-
       {/* Footer help text when nothing is picked yet */}
       {!pinned && (
         <p className="text-xs text-muted text-center">
-          Type a postcode or address — we'll show buildings on a map so you can pick the exact one.
-        </p>
-      )}
-      {pinned && !selected && !buildingsLoading && buildings.length === 0 && !buildingsError && (
-        <p className="text-xs text-muted text-center">
-          No building outlines for this area. Try a postcode for a built-up area.
+          Type a postcode or address — we&apos;ll open the property picker directly.
         </p>
       )}
 
@@ -298,7 +284,7 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
           Layout: Map full-width on top, Street View + 3D Aerial split
           50/50 on the bottom. The whole thing fits in 100vh.
           ═══════════════════════════════════════════════════════════ */}
-      {pinned && selected && selectedCentroid && (
+      {pinned && effectiveCentroid && (
         <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-[stepIn_0.25s_ease-out]">
           {/* Top bar */}
           <header className="flex-shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 border-b border-border bg-white shadow-sm">
@@ -346,8 +332,8 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
             <section className="relative w-full h-1/2 grid grid-cols-1 md:grid-cols-2">
               <div className="relative min-h-0 border-r border-border">
                 <StreetViewPane
-                  lat={selectedCentroid.lat}
-                  lng={selectedCentroid.lng}
+                  lat={effectiveCentroid.lat}
+                  lng={effectiveCentroid.lng}
                   onLocationConfirmed={handleStreetViewLocation}
                 />
               </div>
@@ -356,8 +342,8 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
                   selection={selected}
                   address={pinned.address}
                   postcode={pinned.postcode}
-                  lat={selectedCentroid.lat}
-                  lng={selectedCentroid.lng}
+                  lat={effectiveCentroid.lat}
+                  lng={effectiveCentroid.lng}
                 />
               </div>
             </section>
@@ -390,9 +376,10 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
               </button>
               <button
                 onClick={handleConfirm}
-                className="px-5 py-2 bg-accent text-white rounded-lg font-semibold hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 shadow-md text-sm"
+                disabled={!selected}
+                className="px-5 py-2 bg-accent text-white rounded-lg font-semibold hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 shadow-md text-sm disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Yes, this is my property
+                {selected ? "Yes, this is my property" : "Pick your property first"}
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                 </svg>
