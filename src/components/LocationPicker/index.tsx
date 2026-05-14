@@ -6,7 +6,13 @@ import { fetchBuildingFootprints, type BuildingFootprint } from "@/lib/overpass"
 import SelectionMap from "./SelectionMap";
 import StreetViewPane from "./StreetViewPane";
 import PropertyDataCard from "./PropertyDataCard";
-import { centroidOf, SESSION_KEY, type SelectedLocation } from "./types";
+import {
+  SESSION_KEY,
+  selectionCentroid,
+  selectionFootprint,
+  type SelectedLocation,
+  type Selection,
+} from "./types";
 
 /**
  * Move a lat/lng forward in a heading direction by a given distance in metres.
@@ -72,7 +78,12 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
   const [buildings, setBuildings] = useState<BuildingFootprint[]>([]);
   const [buildingsLoading, setBuildingsLoading] = useState(false);
   const [buildingsError, setBuildingsError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<BuildingFootprint | null>(initial?.building ?? null);
+  // Selection is now a discriminated union: a clicked OSM building, a dropped
+  // pin, or a user-drawn polygon. All three resolve to lat/lng + optional
+  // polygon for the downstream SelectedLocation.
+  const [selected, setSelected] = useState<Selection | null>(
+    initial?.building ? { kind: "building", building: initial.building } : null,
+  );
 
   /** Fetch buildings around a point and update local state. Centralised so every
    *  caller (address search, Street View re-pick, initial preload) shares behaviour. */
@@ -125,13 +136,14 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
 
   const handleConfirm = () => {
     if (!pinned || !selected) return;
-    const c = centroidOf(selected.coords);
+    const c = selectionCentroid(selected);
+    const footprint = selectionFootprint(selected);
     const loc: SelectedLocation = {
       address: pinned.address,
       postcode: pinned.postcode,
       lat: c.lat,
       lng: c.lng,
-      building: selected,
+      building: footprint ?? undefined,
     };
     try {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(loc));
@@ -175,11 +187,29 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
       const fresh = await loadBuildings(target.lat, target.lng);
       const closest = nearestBuildingTo(target.lat, target.lng, fresh);
 
+      // Smart sync: if there's an OSM building near the offset target (within
+      // ~15m), select it. Otherwise drop a pin at the offset point — no more
+      // wrong-neighbour bug because we don't force a building selection when
+      // OSM doesn't have the user's actual house.
+      // Threshold ~15m squared in degrees ≈ 2e-8 at UK latitudes.
+      const SNAP_THRESHOLD_SQ_DEG = 2e-8;
+      let useBuilding = false;
+      if (closest) {
+        const dSq = closest.coords.reduce((min, [bLat, bLng]) => {
+          const dx = bLat - target.lat;
+          const dy = bLng - target.lng;
+          return Math.min(min, dx * dx + dy * dy);
+        }, Infinity);
+        useBuilding = dSq < SNAP_THRESHOLD_SQ_DEG;
+      }
+
       // Commit pinned (so the SelectionMap recentres) + selected together.
       setPinned((p) => (p ? { ...p, lat: target.lat, lng: target.lng } : null));
-      // Only overwrite selected if we actually found a building — otherwise
-      // keep the prior selection so the modal stays open.
-      if (closest) setSelected(closest);
+      if (useBuilding && closest) {
+        setSelected({ kind: "building", building: closest });
+      } else {
+        setSelected({ kind: "pin", lat: target.lat, lng: target.lng });
+      }
     },
     [loadBuildings],
   );
@@ -187,8 +217,8 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
   // Sizing for the inline (pre-modal) state — Tailwind class on the wrapper.
   const mapHeight = variant === "hero" ? "h-[420px]" : "h-[360px]";
 
-  // Compute the centre point we feed into the 3D + bird's-eye panes
-  const selectedCentroid = selected ? centroidOf(selected.coords) : null;
+  // Compute the centre point we feed into the Street View + data card panes
+  const selectedCentroid = selected ? selectionCentroid(selected) : null;
 
   return (
     <div className="space-y-3">
@@ -245,8 +275,8 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
             lat={pinned.lat}
             lng={pinned.lng}
             buildings={buildings}
-            selectedBuilding={null}
-            onBuildingSelected={setSelected}
+            selected={null}
+            onSelectionChanged={setSelected}
           />
         </div>
       )}
@@ -306,9 +336,9 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
                 lat={pinned.lat}
                 lng={pinned.lng}
                 buildings={buildings}
-                selectedBuilding={selected}
-                onBuildingSelected={setSelected}
-                showHint={false}
+                selected={selected}
+                onSelectionChanged={setSelected}
+                showHint={true}
               />
             </section>
 
@@ -323,7 +353,7 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
               </div>
               <div className="relative min-h-0 border-t md:border-t-0 border-border">
                 <PropertyDataCard
-                  building={selected}
+                  selection={selected}
                   address={pinned.address}
                   postcode={pinned.postcode}
                   lat={selectedCentroid.lat}

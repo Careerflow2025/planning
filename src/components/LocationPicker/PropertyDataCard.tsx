@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { BuildingFootprint } from "@/lib/overpass";
+import type { Selection } from "./types";
 
 interface PropertyDataCardProps {
-  building: BuildingFootprint;
+  /** Current selection — building, pin, or drawn polygon. */
+  selection: Selection;
   /** The displayed address from the postcode/address search. */
   address: string;
   /** The displayed postcode (may be empty if user searched by address only). */
@@ -32,13 +33,26 @@ interface LpaInfo {
  *  - Local Planning Authority (looked up from postcodes.io)
  */
 export default function PropertyDataCard({
-  building,
+  selection,
   address,
   postcode,
   lat,
   lng,
 }: PropertyDataCardProps) {
   const [lpa, setLpa] = useState<LpaInfo>({ name: null, region: null, country: null });
+
+  // OSM-tagged building data is only available when the selection is a real
+  // OSM polygon. For pin or drawn selections, OSM tags don't apply.
+  const osmBuilding = selection.kind === "building" ? selection.building : null;
+
+  // Polygon-based footprint area: works for OSM-tagged buildings AND user-
+  // drawn outlines. Bare pins (no polygon) report "—".
+  const polygon =
+    selection.kind === "building"
+      ? selection.building.coords
+      : selection.kind === "drawn"
+        ? selection.coords
+        : null;
 
   // Reverse-lookup the LPA via postcodes.io. Free, no key needed.
   useEffect(() => {
@@ -67,15 +81,17 @@ export default function PropertyDataCard({
     };
   }, [postcode, lat, lng]);
 
-  const footprintM2 = computePolygonAreaM2(building.coords);
-  const tags = building.tags ?? {};
+  // Footprint area is available when we have a polygon (OSM-tagged building or
+  // user-drawn outline). Bare pins have no polygon → "—".
+  const footprintM2 = polygon ? computePolygonAreaM2(polygon) : null;
+  const tags = osmBuilding?.tags ?? {};
 
   // Pretty-print the building type tag. OSM uses values like "yes", "house",
   // "residential", "commercial". Map the common ones to nicer labels.
-  const buildingType = humaniseBuildingType(tags.building);
+  const buildingType = osmBuilding ? humaniseBuildingType(tags.building) : "—";
 
   // Floors: OSM tags "building:levels" with an integer. Often missing.
-  const floors = tags["building:levels"];
+  const floors = osmBuilding ? tags["building:levels"] : undefined;
 
   // Estimated height: prefer "height" tag if present (in metres), else compute
   // from levels (~3m per level) if available.
@@ -86,8 +102,18 @@ export default function PropertyDataCard({
       : null;
 
   // Address line built from OSM tags if present, fallback to the user's search address.
-  const street = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ").trim();
+  const street = osmBuilding
+    ? [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ").trim()
+    : "";
   const osmAddress = street ? `${street}${tags["addr:city"] ? ", " + tags["addr:city"] : ""}` : null;
+
+  // Source label — what the user did to identify the property
+  const sourceLabel =
+    selection.kind === "building"
+      ? "Selected from outline"
+      : selection.kind === "pin"
+        ? "Pin dropped"
+        : "Custom outline drawn";
 
   return (
     <div className="h-full overflow-y-auto bg-white">
@@ -111,12 +137,32 @@ export default function PropertyDataCard({
 
         {/* Footprint */}
         <Section label="Building footprint">
-          <div className="flex items-baseline gap-1.5">
-            <span className="inline-block w-3 h-3 rounded-sm bg-green-500 align-middle" />
-            <span className="text-2xl font-bold leading-none">{footprintM2.toLocaleString()}</span>
-            <span className="text-sm font-semibold text-muted">m²</span>
-          </div>
-          <p className="text-xs text-muted mt-0.5">Calculated from the selected polygon</p>
+          {footprintM2 !== null ? (
+            <>
+              <div className="flex items-baseline gap-1.5">
+                <span className="inline-block w-3 h-3 rounded-sm bg-green-500 align-middle" />
+                <span className="text-2xl font-bold leading-none">{footprintM2.toLocaleString()}</span>
+                <span className="text-sm font-semibold text-muted">m²</span>
+              </div>
+              <p className="text-xs text-muted mt-0.5">
+                {selection.kind === "drawn"
+                  ? "Calculated from your drawn outline"
+                  : "Calculated from the building outline"}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium text-muted">—</p>
+              <p className="text-xs text-muted mt-0.5">
+                Switch to <strong>Draw</strong> mode on the map to outline your property for an area.
+              </p>
+            </>
+          )}
+        </Section>
+
+        {/* Source */}
+        <Section label="Source">
+          <p className="text-xs">{sourceLabel}</p>
         </Section>
 
         {/* OSM-derived facts */}

@@ -39,9 +39,17 @@ async function ensureOptions(): Promise<typeof import("@googlemaps/js-api-loader
  * Load a single Google Maps library (e.g. 'maps3d', 'streetView', 'maps').
  * Returns null when no API key is configured.
  */
-export async function loadMapsLibrary<T extends keyof google.maps.MapsLibrary | "maps3d" | "streetView" | "maps" | "marker" | "places">(
-  libraryName: T,
-): Promise<unknown | null> {
+export async function loadMapsLibrary<
+  T extends
+    | keyof google.maps.MapsLibrary
+    | "maps3d"
+    | "streetView"
+    | "maps"
+    | "marker"
+    | "places"
+    | "drawing"
+    | "geometry",
+>(libraryName: T): Promise<unknown | null> {
   const mod = await ensureOptions();
   if (!mod) return null;
   try {

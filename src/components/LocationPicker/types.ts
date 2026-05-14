@@ -12,8 +12,32 @@ export interface SelectedLocation {
   lat: number;
   /** Longitude of the building centroid (or address pin if no building was selected) */
   lng: number;
-  /** The OSM building footprint the user clicked on, if any */
+  /** The building footprint (from OSM or user-drawn), if any */
   building?: BuildingFootprint;
+}
+
+/**
+ * The three ways a user can identify their property on the map. All three
+ * resolve to a `lat`/`lng` + optional polygon so downstream consumers don't
+ * have to care which method was used.
+ */
+export type Selection =
+  | { kind: "building"; building: BuildingFootprint }
+  | { kind: "pin"; lat: number; lng: number }
+  | { kind: "drawn"; coords: [number, number][]; lat: number; lng: number };
+
+/** Centroid of any selection — used to drive Street View + 3D Aerial recentering. */
+export function selectionCentroid(s: Selection): { lat: number; lng: number } {
+  if (s.kind === "building") return centroidOf(s.building.coords);
+  return { lat: s.lat, lng: s.lng };
+}
+
+/** Pull a BuildingFootprint out of any selection (or null for a bare pin). Used
+ *  for the optional `building` field in the SelectedLocation handoff. */
+export function selectionFootprint(s: Selection): BuildingFootprint | null {
+  if (s.kind === "building") return s.building;
+  if (s.kind === "drawn") return { id: -1, coords: s.coords, tags: {} };
+  return null;
 }
 
 /** Internal stage of the picker UI */
