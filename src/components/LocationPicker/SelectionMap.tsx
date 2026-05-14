@@ -132,6 +132,9 @@ export default function SelectionMap({
   const [configured] = useState(isMapboxConfigured());
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [mode, setMode] = useState<Mode>("auto");
+  // Number of vertices the user has dropped in the in-progress polygon. Drives
+  // the floating "Finish drawing" button — visible once we have ≥3 vertices.
+  const [vertexCount, setVertexCount] = useState(0);
 
   useEffect(() => {
     buildingsRef.current = buildings;
@@ -243,6 +246,23 @@ export default function SelectionMap({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           styles: drawStyles as any,
         });
+        // Track vertex count while drawing so we know when to show the Finish
+        // button. `draw.render` fires after every vertex add/move.
+        map.on("draw.render", () => {
+          const all = drawRef.current?.getAll();
+          const f = all?.features?.[0];
+          if (!f || f.geometry.type !== "Polygon") {
+            setVertexCount(0);
+            return;
+          }
+          const ring = (f.geometry.coordinates[0] ?? []) as unknown[];
+          // MapboxDraw keeps the floating cursor point as the last vertex
+          // while drawing — discount it so the user sees an honest "3 corners
+          // dropped" count.
+          const userVertices = Math.max(0, ring.length - 1);
+          setVertexCount(userVertices);
+        });
+
         map.on("draw.create", (e: { features: GeoJSON.Feature[] }) => {
           const f = e.features?.[0];
           if (!f || f.geometry.type !== "Polygon") return;
@@ -265,6 +285,7 @@ export default function SelectionMap({
           // MapboxDraw keeps the polygon visible internally; we render our own
           // green outline from the selection source instead.
           drawRef.current?.deleteAll();
+          setVertexCount(0);
           setMode("auto");
           onChangeRef.current({ kind: "drawn", coords, lat: cLat, lng: cLng });
         });
@@ -444,6 +465,7 @@ export default function SelectionMap({
         /* ignore */
       }
       drawAttachedRef.current = false;
+      setVertexCount(0);
     }
   }, [mode]);
 
@@ -463,7 +485,23 @@ export default function SelectionMap({
       ? "Click a building to select it. If yours isn't outlined, click anywhere to drop a pin."
       : mode === "pin"
         ? "Click anywhere on your property. Drag the pin to fine-tune."
-        : "Click each corner of your property. Double-click to finish.";
+        : vertexCount === 0
+          ? "Click each corner of your property — at least 3 corners."
+          : vertexCount < 3
+            ? `Click each corner of your property — ${3 - vertexCount} more to finish.`
+            : "Tap Finish drawing once you've outlined the property.";
+
+  const handleFinishDrawing = () => {
+    // Committing the in-progress polygon: leaving draw_polygon mode with
+    // ≥3 vertices triggers MapboxDraw's draw.create event, which our
+    // existing handler converts to a kind="drawn" selection.
+    if (vertexCount < 3) return;
+    try {
+      drawRef.current?.changeMode("simple_select");
+    } catch {
+      /* ignore — fallback to user double-clicking */
+    }
+  };
 
   return (
     <div className="relative h-full overflow-hidden bg-gray-100">
@@ -512,6 +550,21 @@ export default function SelectionMap({
           {selected.kind === "pin" && "Pin placed — drag to fine-tune"}
           {selected.kind === "drawn" && "Custom outline saved"}
         </div>
+      )}
+
+      {/* Floating "Finish drawing" button — appears once the user has ≥3
+          vertices, so they don't need to know about MapboxDraw's
+          double-click-to-close shortcut. */}
+      {mode === "draw" && vertexCount >= 3 && !selected && (
+        <button
+          onClick={handleFinishDrawing}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[15] bg-green-600 text-white px-4 py-2 rounded-xl font-semibold text-sm shadow-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+          Finish drawing ({vertexCount} corners)
+        </button>
       )}
 
       {status === "loading" && (

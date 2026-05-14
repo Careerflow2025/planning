@@ -4,21 +4,37 @@ import { useEffect, useRef, useState } from "react";
 import type * as Mapillary from "mapillary-js";
 import "mapillary-js/dist/mapillary.css";
 import {
-  findNearestMapillaryImage,
+  findBestMapillaryImage,
   isMapillaryConfigured,
   loadMapillary,
 } from "@/lib/mapillary-loader";
 
 interface StreetViewPaneProps {
-  /** Current target lat/lng (centroid of the selected building). The pano starts here. */
+  /** Current pano lat/lng — where to start searching for nearby imagery. */
   lat: number;
   lng: number;
+  /** The property the camera should be looking AT. When set, the image whose
+   *  capture bearing is closest to "facing the target" is preferred over the
+   *  raw nearest image, so the pano opens facing the property rather than the
+   *  opposite side of the street. Defaults to {lat, lng}. */
+  target?: { lat: number; lng: number } | null;
   /** Called when the user navigates to a different image and clicks
    *  "My property is here". The pano position is on the STREET, but the user is
    *  facing their property — so we also pass the camera bearing. The parent
    *  applies a heading-direction offset to find the building IN FRONT of the
    *  user, not the building they're standing on. */
   onLocationConfirmed: (pos: { lat: number; lng: number; heading: number }) => void;
+}
+
+/** Bearing from point A to point B (degrees clockwise from north, 0–360). */
+function bearingTo(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const φ1 = (aLat * Math.PI) / 180;
+  const φ2 = (bLat * Math.PI) / 180;
+  const Δλ = ((bLng - aLng) * Math.PI) / 180;
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x =
+    Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
 /**
@@ -33,15 +49,22 @@ interface StreetViewPaneProps {
 export default function StreetViewPane({
   lat,
   lng,
+  target,
   onLocationConfirmed,
 }: StreetViewPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Mapillary.Viewer | null>(null);
   const currentPosRef = useRef<{ lat: number; lng: number }>({ lat, lng });
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const targetRef = useRef<{ lat: number; lng: number } | null>(target ?? { lat, lng });
 
   const [configured] = useState(isMapillaryConfigured());
   const [status, setStatus] = useState<"loading" | "ready" | "no-imagery" | "error">("loading");
+  const [showHint, setShowHint] = useState(true);
+
+  useEffect(() => {
+    targetRef.current = target ?? { lat, lng };
+  }, [target, lat, lng]);
 
   // (Re)mount the viewer whenever the centroid props change. We keep the
   // dependency on lat/lng so a fresh Street View search from the parent
@@ -55,7 +78,8 @@ export default function StreetViewPane({
 
     (async () => {
       try {
-        const nearest = await findNearestMapillaryImage(lat, lng, 50);
+        const facingTarget = targetRef.current ?? { lat, lng };
+        const nearest = await findBestMapillaryImage(lat, lng, facingTarget, 50);
         if (cancelled) return;
         if (!nearest) {
           setStatus("no-imagery");
@@ -76,21 +100,50 @@ export default function StreetViewPane({
             cover: false,
             // Hide Mapillary branding + image date label
             attribution: false,
-            // Keep the helpful navigation arrows + zoom + sequence stepper
+            // Navigation chrome
             direction: true,
             sequence: true,
             zoom: true,
+            // Arrow-key navigation + preload neighbours so walking feels smooth
+            keyboard: true,
+            cache: true,
           },
         });
         currentPosRef.current = { lat: nearest.lat, lng: nearest.lng };
+
+        // For spherical images, pan to face the target. For perspective
+        // images this is best-effort (Mapillary will clamp).
+        const tryFaceTarget = () => {
+          const t = targetRef.current;
+          if (!t || nearest.bearing == null) return;
+          const desired = bearingTo(nearest.lat, nearest.lng, t.lat, t.lng);
+          // Spherical-image yaw convention: basic X 0..1 wraps 360°. Image
+          // centre (X=0.5) is the original capture bearing.
+          const delta = ((desired - nearest.bearing + 540) % 360) - 180; // [-180, 180]
+          const basicX = (0.5 + delta / 360 + 1) % 1;
+          try {
+            viewer.setCenter([basicX, 0.5]);
+          } catch {
+            /* perspective images may reject — ignore */
+          }
+        };
+
+        let firstImage = true;
         viewer.on("image", async () => {
           try {
             const pos = await viewer.getPosition();
             currentPosRef.current = { lat: pos.lat, lng: pos.lng };
+            if (firstImage) {
+              firstImage = false;
+              tryFaceTarget();
+            }
           } catch {
             /* viewer is being torn down — ignore */
           }
         });
+        // Auto-fade the navigation hint as soon as the user interacts.
+        const dismissHint = () => setShowHint(false);
+        viewer.on("pov", dismissHint);
         viewerRef.current = viewer;
         setStatus("ready");
         // The fullscreen modal animates in; the Mapillary viewer was likely
@@ -181,6 +234,13 @@ export default function StreetViewPane({
       <div className="absolute top-2 left-2 z-[10] bg-white rounded-lg shadow-md px-3 py-1.5 text-xs font-bold pointer-events-none flex items-center gap-1.5">
         🚶 Street View
       </div>
+
+      {/* Navigation hint (auto-fades on first interaction) */}
+      {status === "ready" && showHint && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-[10] bg-black/75 text-white text-xs rounded-full px-3 py-1.5 pointer-events-none animate-pulse">
+          Drag to look around · Click side arrows or use ← → keys to walk
+        </div>
+      )}
 
       {/* "My property is here" — uses the user's current pano position + bearing */}
       {status === "ready" && (

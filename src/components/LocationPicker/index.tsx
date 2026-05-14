@@ -334,6 +334,7 @@ export default function LocationPicker({ initial, onConfirm, variant = "hero" }:
                 <StreetViewPane
                   lat={effectiveCentroid.lat}
                   lng={effectiveCentroid.lng}
+                  target={effectiveCentroid}
                   onLocationConfirmed={handleStreetViewLocation}
                 />
               </div>
