@@ -449,7 +449,7 @@ export default function SelectionMap({
     <div className="relative h-full overflow-hidden bg-gray-100">
       <div
         ref={containerRef}
-        className="absolute inset-0"
+        className="w-full h-full"
         style={{ cursor: mode === "draw" ? "crosshair" : "default" }}
       />
 

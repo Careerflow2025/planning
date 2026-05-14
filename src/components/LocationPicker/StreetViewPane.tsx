@@ -125,7 +125,7 @@ export default function StreetViewPane({
   return (
     <div className="relative h-full rounded-xl overflow-hidden border border-border bg-gray-100">
       {/* Viewer mount point — always rendered so the ref is available before mount */}
-      <div ref={containerRef} className="absolute inset-0" />
+      <div ref={containerRef} className="w-full h-full" />
 
       {/* Status overlays */}
       {status === "loading" && (
