@@ -239,12 +239,12 @@ export default function SelectionMap({
 
         // Instantiate MapboxDraw + register draw.create listener now (pre-load),
         // so the first user click after switching to Draw mode is captured
-        // immediately.
+        // immediately. We use MapboxDraw's default styles — they cover every
+        // required layer id (line, midpoint, vertex, polygon fill/stroke) and
+        // are battle-tested. Custom theming is layered on top via CSS.
         drawRef.current = new MapboxDraw({
           displayControlsDefault: false,
           controls: {},
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          styles: drawStyles as any,
         });
         // Track vertex count while drawing so we know when to show the Finish
         // button. `draw.render` fires after every vertex add/move.
@@ -629,96 +629,3 @@ function applySelectionToSources(map: MapboxGL.Map, selected: Selection | null):
   }
 }
 
-/** Override MapboxDraw default styles so the in-progress polygon is green to
- *  match our final selection outline (and visually distinct from blue OSM). */
-const drawStyles = [
-  // Fill while drawing
-  {
-    id: "gl-draw-polygon-fill-inactive",
-    type: "fill",
-    filter: ["all", ["==", "active", "false"], ["==", "$type", "Polygon"]],
-    paint: { "fill-color": "#22c55e", "fill-opacity": 0.2 },
-  },
-  {
-    id: "gl-draw-polygon-fill-active",
-    type: "fill",
-    filter: ["all", ["==", "active", "true"], ["==", "$type", "Polygon"]],
-    paint: { "fill-color": "#22c55e", "fill-opacity": 0.2 },
-  },
-  // Outline (dashed when in-progress, solid when complete)
-  {
-    id: "gl-draw-polygon-stroke-inactive",
-    type: "line",
-    filter: ["all", ["==", "active", "false"], ["==", "$type", "Polygon"]],
-    layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#22c55e", "line-width": 3 },
-  },
-  {
-    id: "gl-draw-polygon-stroke-active",
-    type: "line",
-    filter: ["all", ["==", "active", "true"], ["==", "$type", "Polygon"]],
-    layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#22c55e", "line-width": 2, "line-dasharray": [0.5, 2] },
-  },
-  // First vertex (coord_path "0.0") — drawn LARGER + green halo so the user
-  // can see they can click back on it to close the polygon (MapboxDraw's
-  // native close behaviour). Other vertices stay small.
-  {
-    id: "gl-draw-polygon-first-vertex-halo",
-    type: "circle",
-    filter: [
-      "all",
-      ["==", "meta", "vertex"],
-      ["==", "$type", "Point"],
-      ["==", "coord_path", "0.0"],
-      ["!=", "mode", "static"],
-    ],
-    paint: {
-      "circle-radius": 12,
-      "circle-color": "#22c55e",
-      "circle-opacity": 0.3,
-    },
-  },
-  {
-    id: "gl-draw-polygon-first-vertex-core",
-    type: "circle",
-    filter: [
-      "all",
-      ["==", "meta", "vertex"],
-      ["==", "$type", "Point"],
-      ["==", "coord_path", "0.0"],
-      ["!=", "mode", "static"],
-    ],
-    paint: {
-      "circle-radius": 7,
-      "circle-color": "#22c55e",
-      "circle-stroke-width": 3,
-      "circle-stroke-color": "#fff",
-    },
-  },
-  // Subsequent vertices — small white-on-green dots.
-  {
-    id: "gl-draw-polygon-and-line-vertex-stroke-inactive",
-    type: "circle",
-    filter: [
-      "all",
-      ["==", "meta", "vertex"],
-      ["==", "$type", "Point"],
-      ["!=", "coord_path", "0.0"],
-      ["!=", "mode", "static"],
-    ],
-    paint: { "circle-radius": 5, "circle-color": "#fff" },
-  },
-  {
-    id: "gl-draw-polygon-and-line-vertex-inactive",
-    type: "circle",
-    filter: [
-      "all",
-      ["==", "meta", "vertex"],
-      ["==", "$type", "Point"],
-      ["!=", "coord_path", "0.0"],
-      ["!=", "mode", "static"],
-    ],
-    paint: { "circle-radius": 3, "circle-color": "#22c55e" },
-  },
-];
