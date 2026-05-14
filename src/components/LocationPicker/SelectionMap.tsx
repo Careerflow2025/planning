@@ -660,8 +660,9 @@ const drawStyles = [
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": "#22c55e", "line-width": 2, "line-dasharray": [0.5, 2] },
   },
-  // First vertex — drawn LARGE in green so the user can see they can click
-  // back on it to close the polygon (MapboxDraw's native close behaviour).
+  // First vertex (coord_path "0.0") — drawn LARGER + green halo so the user
+  // can see they can click back on it to close the polygon (MapboxDraw's
+  // native close behaviour). Other vertices stay small.
   {
     id: "gl-draw-polygon-first-vertex-halo",
     type: "circle",
@@ -669,7 +670,7 @@ const drawStyles = [
       "all",
       ["==", "meta", "vertex"],
       ["==", "$type", "Point"],
-      ["==", "vertex_index", 0],
+      ["==", "coord_path", "0.0"],
       ["!=", "mode", "static"],
     ],
     paint: {
@@ -685,7 +686,7 @@ const drawStyles = [
       "all",
       ["==", "meta", "vertex"],
       ["==", "$type", "Point"],
-      ["==", "vertex_index", 0],
+      ["==", "coord_path", "0.0"],
       ["!=", "mode", "static"],
     ],
     paint: {
@@ -703,7 +704,7 @@ const drawStyles = [
       "all",
       ["==", "meta", "vertex"],
       ["==", "$type", "Point"],
-      ["!=", "vertex_index", 0],
+      ["!=", "coord_path", "0.0"],
       ["!=", "mode", "static"],
     ],
     paint: { "circle-radius": 5, "circle-color": "#fff" },
@@ -715,7 +716,7 @@ const drawStyles = [
       "all",
       ["==", "meta", "vertex"],
       ["==", "$type", "Point"],
-      ["!=", "vertex_index", 0],
+      ["!=", "coord_path", "0.0"],
       ["!=", "mode", "static"],
     ],
     paint: { "circle-radius": 3, "circle-color": "#22c55e" },
