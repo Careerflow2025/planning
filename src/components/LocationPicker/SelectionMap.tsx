@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type * as MapboxGL from "mapbox-gl";
-import type MapboxDrawType from "@mapbox/mapbox-gl-draw";
+import MapboxDraw from "@mapbox/mapbox-gl-draw";
 import "mapbox-gl/dist/mapbox-gl.css";
 import "@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css";
 import { isMapboxConfigured, loadMapboxGL } from "@/lib/mapbox-loader";
@@ -118,9 +118,10 @@ export default function SelectionMap({
   const mapRef = useRef<MapboxGL.Map | null>(null);
   const mapLoadedRef = useRef(false);
   const markerRef = useRef<MapboxGL.Marker | null>(null);
-  const drawRef = useRef<MapboxDrawType | null>(null);
+  const drawRef = useRef<MapboxDraw | null>(null);
   const drawAttachedRef = useRef(false);
   const mapboxglRef = useRef<typeof MapboxGL | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
   // Refs kept in sync with props/state for async map listeners (no stale closures)
   const buildingsRef = useRef<BuildingFootprint[]>(buildings);
@@ -168,8 +169,24 @@ export default function SelectionMap({
       });
       map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
 
+      // Watch the container for size changes (e.g. the fullscreen modal
+      // animating in) and re-tell Mapbox to redraw. Without this, the canvas
+      // stays at its initial 0×0 size and shows blank gray.
+      const ro = new ResizeObserver(() => {
+        try {
+          map.resize();
+        } catch {
+          /* map may already be removed */
+        }
+      });
+      ro.observe(containerRef.current!);
+      resizeObserverRef.current = ro;
+
       map.on("load", () => {
         if (cancelled) return;
+        // Belt-and-braces — the modal stepIn animation often finishes before
+        // ResizeObserver fires; force one resize now so tiles render.
+        map.resize();
         // Sources
         map.addSource(SRC_ALL, { type: "geojson", data: buildingsToFC(buildingsRef.current) });
         map.addSource(SRC_SELECTED, { type: "geojson", data: emptyFC() });
@@ -215,6 +232,41 @@ export default function SelectionMap({
           type: "line",
           source: SRC_SELECTED,
           paint: { "line-color": "#22c55e", "line-width": 3, "line-opacity": 1 },
+        });
+
+        // Instantiate MapboxDraw + register draw.create listener now (pre-load),
+        // so the first user click after switching to Draw mode is captured
+        // immediately.
+        drawRef.current = new MapboxDraw({
+          displayControlsDefault: false,
+          controls: {},
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          styles: drawStyles as any,
+        });
+        map.on("draw.create", (e: { features: GeoJSON.Feature[] }) => {
+          const f = e.features?.[0];
+          if (!f || f.geometry.type !== "Polygon") return;
+          const ring = f.geometry.coordinates[0] as [number, number][];
+          // Mapbox returns [lng, lat] pairs; convert to our [lat, lng] convention
+          // and drop the duplicated closing vertex.
+          const coords: [number, number][] = ring
+            .slice(
+              0,
+              ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+                ? -1
+                : ring.length,
+            )
+            .map(([lo, la]) => [la, lo]);
+          if (coords.length < 3) return;
+          const sumLat = coords.reduce((s, [a]) => s + a, 0);
+          const sumLng = coords.reduce((s, [, b]) => s + b, 0);
+          const cLat = sumLat / coords.length;
+          const cLng = sumLng / coords.length;
+          // MapboxDraw keeps the polygon visible internally; we render our own
+          // green outline from the selection source instead.
+          drawRef.current?.deleteAll();
+          setMode("auto");
+          onChangeRef.current({ kind: "drawn", coords, lat: cLat, lng: cLng });
         });
 
         mapLoadedRef.current = true;
@@ -308,6 +360,8 @@ export default function SelectionMap({
 
     return () => {
       cancelled = true;
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
       markerRef.current?.remove();
       markerRef.current = null;
       if (drawRef.current && mapRef.current && drawAttachedRef.current) {
@@ -369,51 +423,21 @@ export default function SelectionMap({
     }
   }, [selected]);
 
-  // Toggle MapboxDraw when entering/leaving Draw mode
+  // Toggle MapboxDraw when entering/leaving Draw mode. The draw control + its
+  // draw.create listener are set up once at map load (see the `load` handler
+  // above) so the first click after switching to Draw mode is captured
+  // immediately — no lazy-import race.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapLoadedRef.current) return;
-    let cancelled = false;
+    if (!map || !mapLoadedRef.current || !drawRef.current) return;
 
     if (mode === "draw") {
-      void (async () => {
-        // Lazy-load MapboxDraw the first time draw mode is used
-        if (!drawRef.current) {
-          const mod = await import("@mapbox/mapbox-gl-draw");
-          if (cancelled) return;
-          const MapboxDraw = (mod.default ?? mod) as typeof MapboxDrawType;
-          drawRef.current = new MapboxDraw({
-            displayControlsDefault: false,
-            controls: {},
-            styles: drawStyles,
-          });
-          map.on("draw.create", (e: { features: GeoJSON.Feature[] }) => {
-            const f = e.features?.[0];
-            if (!f || f.geometry.type !== "Polygon") return;
-            const ring = f.geometry.coordinates[0] as [number, number][];
-            // Mapbox returns [lng, lat] pairs; convert to our [lat, lng] convention
-            // and drop the duplicated closing vertex.
-            const coords: [number, number][] = ring
-              .slice(0, ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? -1 : ring.length)
-              .map(([lo, la]) => [la, lo]);
-            const sumLat = coords.reduce((s, [a]) => s + a, 0);
-            const sumLng = coords.reduce((s, [, b]) => s + b, 0);
-            const cLat = sumLat / coords.length;
-            const cLng = sumLng / coords.length;
-            // MapboxDraw keeps the polygon visible internally; we render our own
-            // green outline from the selection source instead.
-            drawRef.current?.deleteAll();
-            setMode("auto");
-            onChangeRef.current({ kind: "drawn", coords, lat: cLat, lng: cLng });
-          });
-        }
-        if (drawRef.current && !drawAttachedRef.current) {
-          map.addControl(drawRef.current as unknown as MapboxGL.IControl);
-          drawAttachedRef.current = true;
-        }
-        drawRef.current?.changeMode("draw_polygon");
-      })();
-    } else if (drawRef.current && drawAttachedRef.current) {
+      if (!drawAttachedRef.current) {
+        map.addControl(drawRef.current as unknown as MapboxGL.IControl);
+        drawAttachedRef.current = true;
+      }
+      drawRef.current.changeMode("draw_polygon");
+    } else if (drawAttachedRef.current) {
       try {
         map.removeControl(drawRef.current as unknown as MapboxGL.IControl);
       } catch {
@@ -421,10 +445,6 @@ export default function SelectionMap({
       }
       drawAttachedRef.current = false;
     }
-
-    return () => {
-      cancelled = true;
-    };
   }, [mode]);
 
   if (!configured) {

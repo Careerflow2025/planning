@@ -38,6 +38,7 @@ export default function StreetViewPane({
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Mapillary.Viewer | null>(null);
   const currentPosRef = useRef<{ lat: number; lng: number }>({ lat, lng });
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
   const [configured] = useState(isMapillaryConfigured());
   const [status, setStatus] = useState<"loading" | "ready" | "no-imagery" | "error">("loading");
@@ -92,6 +93,19 @@ export default function StreetViewPane({
         });
         viewerRef.current = viewer;
         setStatus("ready");
+        // The fullscreen modal animates in; the Mapillary viewer was likely
+        // sized before the animation ended. Force one resize once tiles can
+        // start drawing.
+        const ro = new ResizeObserver(() => {
+          try {
+            viewer.resize();
+          } catch {
+            /* viewer may be removed */
+          }
+        });
+        ro.observe(containerRef.current!);
+        viewer.resize();
+        resizeObserverRef.current = ro;
       } catch {
         if (!cancelled) setStatus("error");
       }
@@ -99,6 +113,8 @@ export default function StreetViewPane({
 
     return () => {
       cancelled = true;
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
       viewerRef.current?.remove();
       viewerRef.current = null;
     };
