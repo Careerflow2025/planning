@@ -248,6 +248,11 @@ export default function SelectionMap({
         });
         // Track vertex count while drawing so we know when to show the Finish
         // button. `draw.render` fires after every vertex add/move.
+        //
+        // MapboxDraw's in-progress polygon includes (a) the user-clicked
+        // vertices, (b) a "cursor follower" mirrored at the last position,
+        // and (c) a duplicated closing vertex that equals vertex 0. Both
+        // (b) and (c) must be dropped so "N corners" matches reality.
         map.on("draw.render", () => {
           const all = drawRef.current?.getAll();
           const f = all?.features?.[0];
@@ -255,12 +260,17 @@ export default function SelectionMap({
             setVertexCount(0);
             return;
           }
-          const ring = (f.geometry.coordinates[0] ?? []) as unknown[];
-          // MapboxDraw keeps the floating cursor point as the last vertex
-          // while drawing — discount it so the user sees an honest "3 corners
-          // dropped" count.
-          const userVertices = Math.max(0, ring.length - 1);
-          setVertexCount(userVertices);
+          const ring = (f.geometry.coordinates[0] ?? []) as [number, number][];
+          let count = ring.length;
+          if (
+            count >= 2 &&
+            ring[0][0] === ring[count - 1][0] &&
+            ring[0][1] === ring[count - 1][1]
+          ) {
+            count -= 1; // drop the auto-appended closing duplicate
+          }
+          count = Math.max(0, count - 1); // drop the cursor-follow vertex
+          setVertexCount(count);
         });
 
         map.on("draw.create", (e: { features: GeoJSON.Feature[] }) => {
@@ -490,10 +500,8 @@ export default function SelectionMap({
       : mode === "pin"
         ? "Click anywhere on your property. Drag the pin to fine-tune."
         : vertexCount === 0
-          ? "Click each corner of your property — at least 3 corners."
-          : vertexCount < 3
-            ? `Click each corner of your property — ${3 - vertexCount} more to finish.`
-            : "Tap Finish drawing once you've outlined the property.";
+          ? "Click each corner of your property — tap Finish when ready."
+          : `Drawing your property — ${vertexCount} corner${vertexCount === 1 ? "" : "s"} ✏️`;
 
   const handleFinishDrawing = () => {
     // Committing the in-progress polygon: leaving draw_polygon mode with
@@ -515,28 +523,56 @@ export default function SelectionMap({
         style={{ cursor: mode === "draw" ? "crosshair" : "default" }}
       />
 
-      {/* Mode toggle */}
-      <div className="absolute top-3 left-3 z-[20] bg-white rounded-lg shadow-md p-1 flex gap-1">
-        {(["auto", "pin", "draw"] as Mode[]).map((m) => (
+      {/* Mode toggle + inline Finish CTA */}
+      <div className="absolute top-3 left-3 z-[20] flex items-stretch gap-2">
+        <div className="bg-white rounded-lg shadow-md p-1 flex gap-1">
+          {(["auto", "pin", "draw"] as Mode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors flex items-center gap-1 ${
+                mode === m ? "bg-primary text-white" : "text-gray-700 hover:bg-gray-100"
+              }`}
+              title={
+                m === "auto"
+                  ? "Auto — click an outlined building, or click empty space for a pin"
+                  : m === "pin"
+                    ? "Pin — drop or drag a pin anywhere"
+                    : "Draw — outline your own property boundary"
+              }
+            >
+              {m === "auto" && <>🎯 Auto</>}
+              {m === "pin" && <>📍 Pin</>}
+              {m === "draw" && <>✏️ Draw</>}
+            </button>
+          ))}
+        </div>
+
+        {/* Finish drawing CTA — only in Draw mode. Always visible; greyed
+            out until the user has ≥3 corners, then bright green. */}
+        {mode === "draw" && !selected && (
           <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors flex items-center gap-1 ${
-              mode === m ? "bg-primary text-white" : "text-gray-700 hover:bg-gray-100"
-            }`}
+            onClick={handleFinishDrawing}
+            disabled={vertexCount < 3}
             title={
-              m === "auto"
-                ? "Auto — click an outlined building, or click empty space for a pin"
-                : m === "pin"
-                  ? "Pin — drop or drag a pin anywhere"
-                  : "Draw — outline your own property boundary"
+              vertexCount < 3
+                ? "Click at least 3 corners on the map first"
+                : "Commit the outlined property"
             }
+            className={`px-4 py-2 rounded-lg shadow-md font-semibold text-sm flex items-center gap-1.5 transition-colors ${
+              vertexCount < 3
+                ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                : "bg-green-600 text-white hover:bg-green-700"
+            }`}
           >
-            {m === "auto" && <>🎯 Auto</>}
-            {m === "pin" && <>📍 Pin</>}
-            {m === "draw" && <>✏️ Draw</>}
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
+            {vertexCount === 0
+              ? "Finish drawing"
+              : `Finish drawing (${vertexCount} corner${vertexCount === 1 ? "" : "s"})`}
           </button>
-        ))}
+        )}
       </div>
 
       {/* Contextual help text */}
@@ -556,20 +592,6 @@ export default function SelectionMap({
         </div>
       )}
 
-      {/* Floating "Finish drawing" button — appears once the user has ≥3
-          vertices, so they don't need to know about MapboxDraw's
-          double-click-to-close shortcut. */}
-      {mode === "draw" && vertexCount >= 3 && !selected && (
-        <button
-          onClick={handleFinishDrawing}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[15] bg-green-600 text-white px-4 py-2 rounded-xl font-semibold text-sm shadow-lg hover:bg-green-700 transition-colors flex items-center gap-2"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
-          Finish drawing ({vertexCount} corners)
-        </button>
-      )}
 
       {status === "loading" && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-[5]">
@@ -638,17 +660,64 @@ const drawStyles = [
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": "#22c55e", "line-width": 2, "line-dasharray": [0.5, 2] },
   },
-  // Vertices
+  // First vertex — drawn LARGE in green so the user can see they can click
+  // back on it to close the polygon (MapboxDraw's native close behaviour).
+  {
+    id: "gl-draw-polygon-first-vertex-halo",
+    type: "circle",
+    filter: [
+      "all",
+      ["==", "meta", "vertex"],
+      ["==", "$type", "Point"],
+      ["==", "vertex_index", 0],
+      ["!=", "mode", "static"],
+    ],
+    paint: {
+      "circle-radius": 12,
+      "circle-color": "#22c55e",
+      "circle-opacity": 0.3,
+    },
+  },
+  {
+    id: "gl-draw-polygon-first-vertex-core",
+    type: "circle",
+    filter: [
+      "all",
+      ["==", "meta", "vertex"],
+      ["==", "$type", "Point"],
+      ["==", "vertex_index", 0],
+      ["!=", "mode", "static"],
+    ],
+    paint: {
+      "circle-radius": 7,
+      "circle-color": "#22c55e",
+      "circle-stroke-width": 3,
+      "circle-stroke-color": "#fff",
+    },
+  },
+  // Subsequent vertices — small white-on-green dots.
   {
     id: "gl-draw-polygon-and-line-vertex-stroke-inactive",
     type: "circle",
-    filter: ["all", ["==", "meta", "vertex"], ["==", "$type", "Point"], ["!=", "mode", "static"]],
+    filter: [
+      "all",
+      ["==", "meta", "vertex"],
+      ["==", "$type", "Point"],
+      ["!=", "vertex_index", 0],
+      ["!=", "mode", "static"],
+    ],
     paint: { "circle-radius": 5, "circle-color": "#fff" },
   },
   {
     id: "gl-draw-polygon-and-line-vertex-inactive",
     type: "circle",
-    filter: ["all", ["==", "meta", "vertex"], ["==", "$type", "Point"], ["!=", "mode", "static"]],
+    filter: [
+      "all",
+      ["==", "meta", "vertex"],
+      ["==", "$type", "Point"],
+      ["!=", "vertex_index", 0],
+      ["!=", "mode", "static"],
+    ],
     paint: { "circle-radius": 3, "circle-color": "#22c55e" },
   },
 ];
