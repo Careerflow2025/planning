@@ -1,27 +1,34 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { isGoogleMapsConfigured, loadMapsLibrary } from "@/lib/google-maps-loader";
+import type * as Mapillary from "mapillary-js";
+import "mapillary-js/dist/mapillary.css";
+import {
+  findNearestMapillaryImage,
+  isMapillaryConfigured,
+  loadMapillary,
+} from "@/lib/mapillary-loader";
 
 interface StreetViewPaneProps {
   /** Current target lat/lng (centroid of the selected building). The pano starts here. */
   lat: number;
   lng: number;
-  /** Called when the user navigates Street View elsewhere and clicks
+  /** Called when the user navigates to a different image and clicks
    *  "My property is here". The pano position is on the STREET, but the user is
-   *  facing their property — so we also pass the camera heading. The parent
+   *  facing their property — so we also pass the camera bearing. The parent
    *  applies a heading-direction offset to find the building IN FRONT of the
-   *  user, not the building they're standing on (which is usually a neighbour). */
+   *  user, not the building they're standing on. */
   onLocationConfirmed: (pos: { lat: number; lng: number; heading: number }) => void;
 }
 
 /**
- * Pane 2 of the LocationPicker — interactive Google Street View.
+ * Pane 2 of the LocationPicker — interactive Mapillary Street View.
  *
- * Why the SDK and not an iframe: with the SDK we can listen for `position_changed` to
- * track where the user has panned to. The user can then click "My property is here"
- * and we reverse-lookup the closest OSM building footprint, which becomes the new
- * selection. All three panes update.
+ * Mapillary is the free, open alternative to Google Street View (owned by Meta,
+ * crowdsourced imagery). The Viewer SDK gives us the same pano-navigation UX:
+ * arrows to walk forward/back, drag to look around, plus a `getBearing()` method
+ * we use for the heading offset trick that finds the building IN FRONT of the
+ * camera (rather than the building the camera is standing on top of).
  */
 export default function StreetViewPane({
   lat,
@@ -29,69 +36,79 @@ export default function StreetViewPane({
   onLocationConfirmed,
 }: StreetViewPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const panoRef = useRef<google.maps.StreetViewPanorama | null>(null);
+  const viewerRef = useRef<Mapillary.Viewer | null>(null);
   const currentPosRef = useRef<{ lat: number; lng: number }>({ lat, lng });
-  const [configured] = useState(isGoogleMapsConfigured());
+
+  const [configured] = useState(isMapillaryConfigured());
   const [status, setStatus] = useState<"loading" | "ready" | "no-imagery" | "error">("loading");
 
-  // Mount the panorama once
+  // (Re)mount the viewer whenever the centroid props change. We keep the
+  // dependency on lat/lng so a fresh Street View search from the parent
+  // resyncs the pane. Inside, we tear down + rebuild rather than `moveTo`
+  // because the public Mapillary moveTo API requires an imageId we'd have to
+  // re-derive anyway.
   useEffect(() => {
     if (!configured || !containerRef.current) return;
     let cancelled = false;
+    setStatus("loading");
 
     (async () => {
-      const lib = await loadMapsLibrary("streetView");
-      if (cancelled || !lib || !containerRef.current) {
-        if (!cancelled) setStatus("error");
-        return;
-      }
-
-      // Probe coverage first — Street View doesn't exist for every lat/lng
-      const sv = new google.maps.StreetViewService();
-      sv.getPanorama(
-        { location: { lat, lng }, radius: 100 },
-        (data, svStatus) => {
-          if (cancelled) return;
-          if (svStatus !== google.maps.StreetViewStatus.OK || !data?.location?.latLng) {
-            setStatus("no-imagery");
-            return;
+      try {
+        const nearest = await findNearestMapillaryImage(lat, lng, 100);
+        if (cancelled) return;
+        if (!nearest) {
+          setStatus("no-imagery");
+          return;
+        }
+        const mly = await loadMapillary();
+        if (cancelled || !mly || !containerRef.current) {
+          if (!cancelled) setStatus("error");
+          return;
+        }
+        // Tear down any previous viewer
+        viewerRef.current?.remove();
+        const viewer = new mly.Viewer({
+          container: containerRef.current,
+          accessToken: process.env.NEXT_PUBLIC_MAPILLARY_TOKEN!,
+          imageId: nearest.id,
+          component: { cover: false },
+        });
+        currentPosRef.current = { lat: nearest.lat, lng: nearest.lng };
+        viewer.on("image", async () => {
+          try {
+            const pos = await viewer.getPosition();
+            currentPosRef.current = { lat: pos.lat, lng: pos.lng };
+          } catch {
+            /* viewer is being torn down — ignore */
           }
-          const pano = new google.maps.StreetViewPanorama(containerRef.current!, {
-            position: data.location.latLng,
-            pov: { heading: 0, pitch: 0 },
-            zoom: 1,
-            addressControl: false,
-            fullscreenControl: false,
-            enableCloseButton: false,
-            motionTracking: false,
-            motionTrackingControl: false,
-          });
-          pano.addListener("position_changed", () => {
-            const p = pano.getPosition();
-            if (p) currentPosRef.current = { lat: p.lat(), lng: p.lng() };
-          });
-          panoRef.current = pano;
-          setStatus("ready");
-        },
-      );
+        });
+        viewerRef.current = viewer;
+        setStatus("ready");
+      } catch {
+        if (!cancelled) setStatus("error");
+      }
     })();
 
     return () => {
       cancelled = true;
+      viewerRef.current?.remove();
+      viewerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configured]);
+  }, [configured, lat, lng]);
 
-  // When a different building is selected from another pane, recenter the pano
-  useEffect(() => {
-    if (!panoRef.current) return;
-    panoRef.current.setPosition({ lat, lng });
-    currentPosRef.current = { lat, lng };
-  }, [lat, lng]);
-
-  const handleSelectHere = () => {
-    const heading = panoRef.current?.getPov().heading ?? 0;
-    onLocationConfirmed({ ...currentPosRef.current, heading });
+  const handleSelectHere = async () => {
+    const viewer = viewerRef.current;
+    if (!viewer) {
+      onLocationConfirmed({ ...currentPosRef.current, heading: 0 });
+      return;
+    }
+    try {
+      const [pos, heading] = await Promise.all([viewer.getPosition(), viewer.getBearing()]);
+      onLocationConfirmed({ lat: pos.lat, lng: pos.lng, heading });
+    } catch {
+      onLocationConfirmed({ ...currentPosRef.current, heading: 0 });
+    }
   };
 
   if (!configured) {
@@ -99,7 +116,7 @@ export default function StreetViewPane({
       <div className="h-full flex flex-col items-center justify-center bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
         <p className="text-sm font-semibold text-amber-900">Street View not configured</p>
         <p className="text-xs text-amber-700 mt-1">
-          Add <code className="bg-amber-100 px-1 rounded">NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code> in Netlify.
+          Add <code className="bg-amber-100 px-1 rounded">NEXT_PUBLIC_MAPILLARY_TOKEN</code> in Netlify.
         </p>
       </div>
     );
@@ -107,7 +124,7 @@ export default function StreetViewPane({
 
   return (
     <div className="relative h-full rounded-xl overflow-hidden border border-border bg-gray-100">
-      {/* Panorama mount point */}
+      {/* Viewer mount point — always rendered so the ref is available before mount */}
       <div ref={containerRef} className="absolute inset-0" />
 
       {/* Status overlays */}
@@ -141,7 +158,7 @@ export default function StreetViewPane({
         🚶 Street View
       </div>
 
-      {/* "My property is here" — uses the user's current pano position */}
+      {/* "My property is here" — uses the user's current pano position + bearing */}
       {status === "ready" && (
         <button
           onClick={handleSelectHere}

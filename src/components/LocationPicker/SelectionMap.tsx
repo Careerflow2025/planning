@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { isGoogleMapsConfigured, loadMapsLibrary } from "@/lib/google-maps-loader";
+import type * as MapboxGL from "mapbox-gl";
+import type MapboxDrawType from "@mapbox/mapbox-gl-draw";
+import "mapbox-gl/dist/mapbox-gl.css";
+import "@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css";
+import { isMapboxConfigured, loadMapboxGL } from "@/lib/mapbox-loader";
 import { findClosestBuilding, type BuildingFootprint } from "@/lib/overpass";
 import type { Selection } from "./types";
 
@@ -21,17 +25,86 @@ interface SelectionMapProps {
   showHint?: boolean;
 }
 
+const SRC_ALL = "osm-buildings-all";
+const SRC_SELECTED = "osm-buildings-selected";
+const SRC_HOVER = "osm-buildings-hover";
+const LAYER_ALL_FILL = "osm-buildings-all-fill";
+const LAYER_ALL_LINE = "osm-buildings-all-line";
+const LAYER_SELECTED_FILL = "osm-buildings-selected-fill";
+const LAYER_SELECTED_LINE = "osm-buildings-selected-line";
+const LAYER_HOVER_FILL = "osm-buildings-hover-fill";
+const LAYER_HOVER_LINE = "osm-buildings-hover-line";
+
+type FC = GeoJSON.FeatureCollection<GeoJSON.Polygon, { id?: number }>;
+
+function emptyFC(): FC {
+  return { type: "FeatureCollection", features: [] };
+}
+
+function buildingsToFC(buildings: BuildingFootprint[]): FC {
+  return {
+    type: "FeatureCollection",
+    features: buildings.map((b) => ({
+      type: "Feature",
+      id: b.id, // numeric — used by queryRenderedFeatures lookup
+      properties: { id: b.id },
+      geometry: {
+        type: "Polygon",
+        // OSM coords are [lat, lng]; Mapbox needs [lng, lat] and a closed ring.
+        coordinates: [closeRing(b.coords.map(([la, lo]) => [lo, la] as [number, number]))],
+      },
+    })),
+  };
+}
+
+function buildingToFC(b: BuildingFootprint): FC {
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        id: b.id,
+        properties: { id: b.id },
+        geometry: {
+          type: "Polygon",
+          coordinates: [closeRing(b.coords.map(([la, lo]) => [lo, la] as [number, number]))],
+        },
+      },
+    ],
+  };
+}
+
+function drawnToFC(coords: [number, number][]): FC {
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [closeRing(coords.map(([la, lo]) => [lo, la] as [number, number]))],
+        },
+      },
+    ],
+  };
+}
+
+function closeRing(ring: [number, number][]): [number, number][] {
+  if (ring.length === 0) return ring;
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) return [...ring, first];
+  return ring;
+}
+
 /**
- * Pane 1 of the LocationPicker — Google Maps satellite with 3 selection modes.
+ * Pane 1 of the LocationPicker — Mapbox satellite with 3 selection modes.
  *
  *   Auto  — click a blue OSM polygon to select it. If no polygon at the click
- *           point, drop a pin and auto-snap to the nearest building within 10m.
- *   Pin   — explicit. Click anywhere drops/moves a draggable orange pin. No snap.
+ *           point, drop a pin and auto-snap to the nearest building within ~15m.
+ *   Pin   — explicit. Click anywhere drops/moves a draggable orange pin.
  *   Draw  — user clicks each corner of their property; double-click to close.
- *           Resulting polygon becomes the selection.
- *
- * Use this when OSM has the building outline (Auto), when OSM misses it (Pin),
- * or when the user wants their exact property boundary (Draw).
  */
 export default function SelectionMap({
   lat,
@@ -42,26 +115,23 @@ export default function SelectionMap({
   showHint = true,
 }: SelectionMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<google.maps.Map | null>(null);
+  const mapRef = useRef<MapboxGL.Map | null>(null);
+  const mapLoadedRef = useRef(false);
+  const markerRef = useRef<MapboxGL.Marker | null>(null);
+  const drawRef = useRef<MapboxDrawType | null>(null);
+  const drawAttachedRef = useRef(false);
+  const mapboxglRef = useRef<typeof MapboxGL | null>(null);
 
-  // Layers we own
-  const polygonsRef = useRef<google.maps.Polygon[]>([]);       // all OSM polygons (faint blue)
-  const selectedPolygonRef = useRef<google.maps.Polygon | null>(null); // green selection polygon
-  const hoverPolygonRef = useRef<google.maps.Polygon | null>(null);    // light-blue hover preview
-  const markerRef = useRef<google.maps.Marker | null>(null);   // orange pin
-  const drawingManagerRef = useRef<google.maps.drawing.DrawingManager | null>(null);
-
-  // Refs that stay current for async map listeners (avoid stale closures)
+  // Refs kept in sync with props/state for async map listeners (no stale closures)
   const buildingsRef = useRef<BuildingFootprint[]>(buildings);
   const selectedRef = useRef<Selection | null>(selected);
   const modeRef = useRef<Mode>("auto");
   const onChangeRef = useRef(onSelectionChanged);
 
-  const [configured] = useState(isGoogleMapsConfigured());
+  const [configured] = useState(isMapboxConfigured());
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [mode, setMode] = useState<Mode>("auto");
 
-  // Sync refs whenever props/state change
   useEffect(() => {
     buildingsRef.current = buildings;
   }, [buildings]);
@@ -75,67 +145,121 @@ export default function SelectionMap({
     onChangeRef.current = onSelectionChanged;
   }, [onSelectionChanged]);
 
-  // Mount Google Map exactly once
+  // Mount the map exactly once
   useEffect(() => {
     if (!configured || !containerRef.current) return;
     let cancelled = false;
 
     (async () => {
-      // Load core maps + drawing libraries in parallel
-      const [mapsLib, drawingLib] = await Promise.all([
-        loadMapsLibrary("maps"),
-        loadMapsLibrary("drawing"),
-      ]);
-      if (cancelled || !mapsLib || !containerRef.current) {
+      const mapboxgl = await loadMapboxGL();
+      if (cancelled || !mapboxgl || !containerRef.current) {
         if (!cancelled) setStatus("error");
         return;
       }
+      mapboxglRef.current = mapboxgl;
 
-      const map = new google.maps.Map(containerRef.current, {
-        center: { lat, lng },
+      const map = new mapboxgl.Map({
+        container: containerRef.current,
+        style: "mapbox://styles/mapbox/satellite-streets-v12",
+        center: [lng, lat],
         zoom: 19,
-        mapTypeId: "satellite",
-        tilt: 0,
-        disableDefaultUI: false,
-        zoomControl: true,
-        streetViewControl: false,
-        fullscreenControl: false,
-        mapTypeControl: false,
-        rotateControl: false,
-        scaleControl: false,
+        pitch: 0,
+        attributionControl: true,
+      });
+      map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
+
+      map.on("load", () => {
+        if (cancelled) return;
+        // Sources
+        map.addSource(SRC_ALL, { type: "geojson", data: buildingsToFC(buildingsRef.current) });
+        map.addSource(SRC_SELECTED, { type: "geojson", data: emptyFC() });
+        map.addSource(SRC_HOVER, { type: "geojson", data: emptyFC() });
+
+        // Layers — all buildings (faint blue)
+        map.addLayer({
+          id: LAYER_ALL_FILL,
+          type: "fill",
+          source: SRC_ALL,
+          paint: { "fill-color": "#3b82f6", "fill-opacity": 0.08 },
+        });
+        map.addLayer({
+          id: LAYER_ALL_LINE,
+          type: "line",
+          source: SRC_ALL,
+          paint: { "line-color": "#3b82f6", "line-width": 1.5, "line-opacity": 0.9 },
+        });
+
+        // Hover preview (slightly stronger blue)
+        map.addLayer({
+          id: LAYER_HOVER_FILL,
+          type: "fill",
+          source: SRC_HOVER,
+          paint: { "fill-color": "#60a5fa", "fill-opacity": 0.2 },
+        });
+        map.addLayer({
+          id: LAYER_HOVER_LINE,
+          type: "line",
+          source: SRC_HOVER,
+          paint: { "line-color": "#60a5fa", "line-width": 2, "line-opacity": 0.9 },
+        });
+
+        // Selected (green)
+        map.addLayer({
+          id: LAYER_SELECTED_FILL,
+          type: "fill",
+          source: SRC_SELECTED,
+          paint: { "fill-color": "#22c55e", "fill-opacity": 0.25 },
+        });
+        map.addLayer({
+          id: LAYER_SELECTED_LINE,
+          type: "line",
+          source: SRC_SELECTED,
+          paint: { "line-color": "#22c55e", "line-width": 3, "line-opacity": 1 },
+        });
+
+        mapLoadedRef.current = true;
+
+        // Push current selection into the source (if any)
+        applySelectionToSources(map, selectedRef.current);
+
+        setStatus("ready");
       });
 
-      // Listener: handle clicks based on current mode
-      map.addListener("click", (e: google.maps.MapMouseEvent) => {
-        const ll = e.latLng;
-        if (!ll) return;
+      // Click handler — dispatches based on current mode
+      map.on("click", (e) => {
         const m = modeRef.current;
-        if (m === "draw") return; // drawing manager owns the clicks
-        const clickLat = ll.lat();
-        const clickLng = ll.lng();
+        if (m === "draw") return; // MapboxDraw owns clicks in draw mode
+
+        const clickLat = e.lngLat.lat;
+        const clickLng = e.lngLat.lng;
 
         if (m === "pin") {
-          // Pin mode: drop a pin, no auto-snap
           onChangeRef.current({ kind: "pin", lat: clickLat, lng: clickLng });
           return;
         }
 
-        // Auto mode: try to find a building near the click. nearestVertexBuilding
-        // gives us the closest building polygon. We use a simple distance threshold
-        // (~15m) to decide whether the click landed on a building vs empty space.
+        // Auto mode: prefer a rendered polygon hit first (precise),
+        // fall back to nearest-building heuristic for clicks near an outline.
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ALL_FILL] });
+        if (hit.length > 0) {
+          const hitId = hit[0].id ?? hit[0].properties?.id;
+          const match = buildingsRef.current.find((b) => b.id === hitId);
+          if (match) {
+            onChangeRef.current({ kind: "building", building: match });
+            return;
+          }
+        }
+
         const arr = buildingsRef.current;
         if (arr.length > 0) {
           const candidate = findClosestBuilding(clickLat, clickLng, arr);
           if (candidate) {
-            // Compute the squared distance from click to the nearest vertex
-            // of that candidate's polygon. Threshold ~15m in degrees ≈ 1.35e-8.
-            // (15m at UK latitudes is ~1.35e-4° lat * ~1.35e-4° lng → squared ≈ 1.8e-8)
             const dSq = candidate.coords.reduce((min, [bLat, bLng]) => {
               const dx = bLat - clickLat;
               const dy = bLng - clickLng;
               return Math.min(min, dx * dx + dy * dy);
             }, Infinity);
-            // 15m threshold — squared lat/lng degrees
+            // 15m threshold — squared lat/lng degrees ≈ 2e-8 at UK latitudes
             if (dSq < 2e-8) {
               onChangeRef.current({ kind: "building", building: candidate });
               return;
@@ -147,209 +271,168 @@ export default function SelectionMap({
         onChangeRef.current({ kind: "pin", lat: clickLat, lng: clickLng });
       });
 
-      // Hover preview only in auto mode
+      // Hover preview (auto mode only, throttled with rAF)
       let hoverFrame = 0;
-      map.addListener("mousemove", (e: google.maps.MapMouseEvent) => {
+      map.on("mousemove", (e) => {
         if (modeRef.current !== "auto") return;
-        const ll = e.latLng;
-        const arr = buildingsRef.current;
-        if (!ll || arr.length === 0) return;
         cancelAnimationFrame(hoverFrame);
         hoverFrame = requestAnimationFrame(() => {
-          const candidate = findClosestBuilding(ll.lat(), ll.lng(), arr);
-          if (hoverPolygonRef.current) {
-            hoverPolygonRef.current.setMap(null);
-            hoverPolygonRef.current = null;
+          const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ALL_FILL] });
+          const src = map.getSource(SRC_HOVER) as MapboxGL.GeoJSONSource | undefined;
+          if (!src) return;
+          if (hit.length === 0) {
+            src.setData(emptyFC());
+            return;
           }
-          if (!candidate) return;
+          const hitId = hit[0].id ?? hit[0].properties?.id;
           const sel = selectedRef.current;
-          if (sel?.kind === "building" && sel.building.id === candidate.id) return;
-          hoverPolygonRef.current = new google.maps.Polygon({
-            paths: candidate.coords.map(([la, lo]) => ({ lat: la, lng: lo })),
-            strokeColor: "#60a5fa",
-            strokeWeight: 2,
-            strokeOpacity: 0.9,
-            fillColor: "#60a5fa",
-            fillOpacity: 0.2,
-            clickable: false,
-            map,
-          });
+          if (sel?.kind === "building" && sel.building.id === hitId) {
+            src.setData(emptyFC());
+            return;
+          }
+          const match = buildingsRef.current.find((b) => b.id === hitId);
+          if (!match) {
+            src.setData(emptyFC());
+            return;
+          }
+          src.setData(buildingToFC(match));
         });
       });
-
-      // Set up the drawing manager (idle by default)
-      if (drawingLib && google.maps.drawing) {
-        const dm = new google.maps.drawing.DrawingManager({
-          drawingMode: null, // off until user picks Draw mode
-          drawingControl: false,
-          polygonOptions: {
-            strokeColor: "#22c55e",
-            strokeWeight: 3,
-            strokeOpacity: 1,
-            fillColor: "#22c55e",
-            fillOpacity: 0.25,
-            editable: true,
-            clickable: false,
-            zIndex: 100,
-          },
-        });
-        dm.setMap(map);
-        drawingManagerRef.current = dm;
-
-        google.maps.event.addListener(
-          dm,
-          "polygoncomplete",
-          (polygon: google.maps.Polygon) => {
-            const path = polygon.getPath();
-            const coords: [number, number][] = [];
-            for (let i = 0; i < path.getLength(); i++) {
-              const p = path.getAt(i);
-              coords.push([p.lat(), p.lng()]);
-            }
-            // Compute simple centroid
-            const sumLat = coords.reduce((s, [a]) => s + a, 0);
-            const sumLng = coords.reduce((s, [, b]) => s + b, 0);
-            const cLat = sumLat / coords.length;
-            const cLng = sumLng / coords.length;
-            // The drawing manager has placed its own polygon; we'll remove it
-            // because the selectedPolygon useEffect renders the green outline
-            // from the new selection.
-            polygon.setMap(null);
-            // Switch out of draw mode and commit
-            dm.setDrawingMode(null);
-            setMode("auto");
-            onChangeRef.current({ kind: "drawn", coords, lat: cLat, lng: cLng });
-          },
-        );
-      }
+      map.on("mouseleave", LAYER_ALL_FILL, () => {
+        const src = map.getSource(SRC_HOVER) as MapboxGL.GeoJSONSource | undefined;
+        src?.setData(emptyFC());
+      });
 
       mapRef.current = map;
-      setStatus("ready");
     })();
 
     return () => {
       cancelled = true;
-      polygonsRef.current.forEach((p) => p.setMap(null));
-      polygonsRef.current = [];
-      selectedPolygonRef.current?.setMap(null);
-      selectedPolygonRef.current = null;
-      hoverPolygonRef.current?.setMap(null);
-      hoverPolygonRef.current = null;
-      markerRef.current?.setMap(null);
+      markerRef.current?.remove();
       markerRef.current = null;
-      drawingManagerRef.current?.setMap(null);
-      drawingManagerRef.current = null;
+      if (drawRef.current && mapRef.current && drawAttachedRef.current) {
+        try {
+          mapRef.current.removeControl(drawRef.current as unknown as MapboxGL.IControl);
+        } catch {
+          /* ignore */
+        }
+      }
+      drawRef.current = null;
+      drawAttachedRef.current = false;
+      mapRef.current?.remove();
       mapRef.current = null;
+      mapLoadedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configured]);
 
-  // Toggle drawing manager mode when local `mode` changes
-  useEffect(() => {
-    const dm = drawingManagerRef.current;
-    if (!dm) return;
-    if (mode === "draw" && google.maps.drawing) {
-      dm.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
-    } else {
-      dm.setDrawingMode(null);
-    }
-  }, [mode]);
-
   // Recenter when lat/lng changes (e.g. Street View handoff)
   useEffect(() => {
-    if (mapRef.current) {
-      mapRef.current.panTo({ lat, lng });
-    }
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    map.flyTo({ center: [lng, lat], zoom: 19, speed: 1.2 });
   }, [lat, lng]);
 
-  // Render all OSM building outlines (faint blue) when the buildings list changes
+  // Refresh the "all buildings" source whenever the prop list changes
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
-    polygonsRef.current.forEach((p) => p.setMap(null));
-    polygonsRef.current = buildings.map(
-      (b) =>
-        new google.maps.Polygon({
-          paths: b.coords.map(([la, lo]) => ({ lat: la, lng: lo })),
-          strokeColor: "#3b82f6",
-          strokeWeight: 1.5,
-          strokeOpacity: 0.9,
-          fillColor: "#3b82f6",
-          fillOpacity: 0.08,
-          clickable: false,
-          map,
-        }),
-    );
+    if (!map || !mapLoadedRef.current) return;
+    const src = map.getSource(SRC_ALL) as MapboxGL.GeoJSONSource | undefined;
+    src?.setData(buildingsToFC(buildings));
   }, [buildings]);
 
-  // Render the selected polygon (green) when kind is building or drawn
+  // Render the selected polygon (green) + orange pin marker reactively
   useEffect(() => {
     const map = mapRef.current;
-    selectedPolygonRef.current?.setMap(null);
-    selectedPolygonRef.current = null;
-    if (!map || !selected) return;
+    if (!map || !mapLoadedRef.current) return;
+    applySelectionToSources(map, selected);
 
-    if (selected.kind === "building") {
-      selectedPolygonRef.current = new google.maps.Polygon({
-        paths: selected.building.coords.map(([la, lo]) => ({ lat: la, lng: lo })),
-        strokeColor: "#22c55e",
-        strokeWeight: 3,
-        strokeOpacity: 1,
-        fillColor: "#22c55e",
-        fillOpacity: 0.25,
-        clickable: false,
-        map,
-      });
-    } else if (selected.kind === "drawn") {
-      selectedPolygonRef.current = new google.maps.Polygon({
-        paths: selected.coords.map(([la, lo]) => ({ lat: la, lng: lo })),
-        strokeColor: "#22c55e",
-        strokeWeight: 3,
-        strokeOpacity: 1,
-        fillColor: "#22c55e",
-        fillOpacity: 0.25,
-        strokePosition: google.maps.StrokePosition.OUTSIDE,
-        clickable: false,
-        map,
-      });
-    }
-  }, [selected]);
+    const mapboxgl = mapboxglRef.current;
+    if (!mapboxgl) return;
 
-  // Render the orange pin marker when the selection is a pin (or supplementary
-  // for a kind=building snap from a click on empty space — we omit that for
-  // simplicity here; pin only shows for kind=pin)
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
     if (selected?.kind === "pin") {
-      const pos = { lat: selected.lat, lng: selected.lng };
+      const pos: [number, number] = [selected.lng, selected.lat];
       if (!markerRef.current) {
-        markerRef.current = new google.maps.Marker({
-          position: pos,
-          map,
-          draggable: true,
-          animation: google.maps.Animation.DROP,
-          title: "Your property",
-        });
-        markerRef.current.addListener("dragend", () => {
-          const p = markerRef.current?.getPosition();
-          if (p) onChangeRef.current({ kind: "pin", lat: p.lat(), lng: p.lng() });
+        markerRef.current = new mapboxgl.Marker({ draggable: true, color: "#f97316" })
+          .setLngLat(pos)
+          .addTo(map);
+        markerRef.current.on("dragend", () => {
+          const ll = markerRef.current?.getLngLat();
+          if (ll) onChangeRef.current({ kind: "pin", lat: ll.lat, lng: ll.lng });
         });
       } else {
-        markerRef.current.setPosition(pos);
-        markerRef.current.setMap(map);
+        markerRef.current.setLngLat(pos);
       }
     } else {
-      markerRef.current?.setMap(null);
+      markerRef.current?.remove();
+      markerRef.current = null;
     }
   }, [selected]);
+
+  // Toggle MapboxDraw when entering/leaving Draw mode
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    let cancelled = false;
+
+    if (mode === "draw") {
+      void (async () => {
+        // Lazy-load MapboxDraw the first time draw mode is used
+        if (!drawRef.current) {
+          const mod = await import("@mapbox/mapbox-gl-draw");
+          if (cancelled) return;
+          const MapboxDraw = (mod.default ?? mod) as typeof MapboxDrawType;
+          drawRef.current = new MapboxDraw({
+            displayControlsDefault: false,
+            controls: {},
+            styles: drawStyles,
+          });
+          map.on("draw.create", (e: { features: GeoJSON.Feature[] }) => {
+            const f = e.features?.[0];
+            if (!f || f.geometry.type !== "Polygon") return;
+            const ring = f.geometry.coordinates[0] as [number, number][];
+            // Mapbox returns [lng, lat] pairs; convert to our [lat, lng] convention
+            // and drop the duplicated closing vertex.
+            const coords: [number, number][] = ring
+              .slice(0, ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? -1 : ring.length)
+              .map(([lo, la]) => [la, lo]);
+            const sumLat = coords.reduce((s, [a]) => s + a, 0);
+            const sumLng = coords.reduce((s, [, b]) => s + b, 0);
+            const cLat = sumLat / coords.length;
+            const cLng = sumLng / coords.length;
+            // MapboxDraw keeps the polygon visible internally; we render our own
+            // green outline from the selection source instead.
+            drawRef.current?.deleteAll();
+            setMode("auto");
+            onChangeRef.current({ kind: "drawn", coords, lat: cLat, lng: cLng });
+          });
+        }
+        if (drawRef.current && !drawAttachedRef.current) {
+          map.addControl(drawRef.current as unknown as MapboxGL.IControl);
+          drawAttachedRef.current = true;
+        }
+        drawRef.current?.changeMode("draw_polygon");
+      })();
+    } else if (drawRef.current && drawAttachedRef.current) {
+      try {
+        map.removeControl(drawRef.current as unknown as MapboxGL.IControl);
+      } catch {
+        /* ignore */
+      }
+      drawAttachedRef.current = false;
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
 
   if (!configured) {
     return (
       <div className="h-full flex flex-col items-center justify-center bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
-        <p className="text-sm font-semibold text-amber-900">Google Maps not configured</p>
+        <p className="text-sm font-semibold text-amber-900">Map not configured</p>
         <p className="text-xs text-amber-700 mt-1">
-          Add <code className="bg-amber-100 px-1 rounded">NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code> in Netlify.
+          Add <code className="bg-amber-100 px-1 rounded">NEXT_PUBLIC_MAPBOX_TOKEN</code> in Netlify.
         </p>
       </div>
     );
@@ -422,9 +505,73 @@ export default function SelectionMap({
 
       {status === "error" && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-[5] p-6 text-center">
-          <p className="text-sm text-muted">Couldn&apos;t load Google Maps.</p>
+          <p className="text-sm text-muted">Couldn&apos;t load the map.</p>
         </div>
       )}
     </div>
   );
 }
+
+/** Push the current `selected` into the GeoJSON sources. Pin selections clear
+ *  the selected polygon source — the orange marker is rendered separately. */
+function applySelectionToSources(map: MapboxGL.Map, selected: Selection | null): void {
+  const src = map.getSource(SRC_SELECTED) as MapboxGL.GeoJSONSource | undefined;
+  if (!src) return;
+  if (!selected) {
+    src.setData(emptyFC());
+    return;
+  }
+  if (selected.kind === "building") {
+    src.setData(buildingToFC(selected.building));
+  } else if (selected.kind === "drawn") {
+    src.setData(drawnToFC(selected.coords));
+  } else {
+    src.setData(emptyFC());
+  }
+}
+
+/** Override MapboxDraw default styles so the in-progress polygon is green to
+ *  match our final selection outline (and visually distinct from blue OSM). */
+const drawStyles = [
+  // Fill while drawing
+  {
+    id: "gl-draw-polygon-fill-inactive",
+    type: "fill",
+    filter: ["all", ["==", "active", "false"], ["==", "$type", "Polygon"]],
+    paint: { "fill-color": "#22c55e", "fill-opacity": 0.2 },
+  },
+  {
+    id: "gl-draw-polygon-fill-active",
+    type: "fill",
+    filter: ["all", ["==", "active", "true"], ["==", "$type", "Polygon"]],
+    paint: { "fill-color": "#22c55e", "fill-opacity": 0.2 },
+  },
+  // Outline (dashed when in-progress, solid when complete)
+  {
+    id: "gl-draw-polygon-stroke-inactive",
+    type: "line",
+    filter: ["all", ["==", "active", "false"], ["==", "$type", "Polygon"]],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#22c55e", "line-width": 3 },
+  },
+  {
+    id: "gl-draw-polygon-stroke-active",
+    type: "line",
+    filter: ["all", ["==", "active", "true"], ["==", "$type", "Polygon"]],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#22c55e", "line-width": 2, "line-dasharray": [0.5, 2] },
+  },
+  // Vertices
+  {
+    id: "gl-draw-polygon-and-line-vertex-stroke-inactive",
+    type: "circle",
+    filter: ["all", ["==", "meta", "vertex"], ["==", "$type", "Point"], ["!=", "mode", "static"]],
+    paint: { "circle-radius": 5, "circle-color": "#fff" },
+  },
+  {
+    id: "gl-draw-polygon-and-line-vertex-inactive",
+    type: "circle",
+    filter: ["all", ["==", "meta", "vertex"], ["==", "$type", "Point"], ["!=", "mode", "static"]],
+    paint: { "circle-radius": 3, "circle-color": "#22c55e" },
+  },
+];
