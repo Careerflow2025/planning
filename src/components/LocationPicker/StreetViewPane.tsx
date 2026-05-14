@@ -54,7 +54,7 @@ export default function StreetViewPane({
 
     (async () => {
       try {
-        const nearest = await findNearestMapillaryImage(lat, lng, 100);
+        const nearest = await findNearestMapillaryImage(lat, lng, 50);
         if (cancelled) return;
         if (!nearest) {
           setStatus("no-imagery");

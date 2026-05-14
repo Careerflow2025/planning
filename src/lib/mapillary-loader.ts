@@ -44,15 +44,18 @@ export interface NearestMapillaryImage {
 export async function findNearestMapillaryImage(
   lat: number,
   lng: number,
-  radius = 100,
+  radius = 50,
 ): Promise<NearestMapillaryImage | null> {
   const token = process.env.NEXT_PUBLIC_MAPILLARY_TOKEN;
   if (!token) return null;
 
   const url = new URL("https://graph.mapillary.com/images");
   url.searchParams.set("fields", "id,geometry,compass_angle");
-  url.searchParams.set("closeto", `${lng},${lat}`);
-  url.searchParams.set("radius", String(radius));
+  // Graph API expects separate lat + lng + radius (max 50m).
+  // `closeto=lng,lat` is silently accepted but returns empty data.
+  url.searchParams.set("lat", String(lat));
+  url.searchParams.set("lng", String(lng));
+  url.searchParams.set("radius", String(Math.min(radius, 50)));
   url.searchParams.set("limit", "1");
 
   const res = await fetch(url.toString(), {
