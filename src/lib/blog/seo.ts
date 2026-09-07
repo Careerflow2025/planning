@@ -12,7 +12,8 @@ export const BLOG_DESCRIPTION =
 
 function resolveSiteUrl(): string {
   const raw = (process.env.NEXT_PUBLIC_APP_URL ?? "").trim();
-  const candidate = raw || "https://planninglabs.co.uk";
+  // Netlify preview/branch hosts must never become the canonical origin.
+  const candidate = raw && !/.netlify.app$/i.test(new URL(raw).host) ? raw : "https://planninglabs.co.uk";
   try {
     const url = new URL(candidate);
     return url.origin;
