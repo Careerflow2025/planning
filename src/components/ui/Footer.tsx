@@ -54,6 +54,22 @@ export default function Footer() {
             <h4 className="font-semibold text-sm mb-3">Resources</h4>
             <ul className="space-y-2">
               <li>
+                <Link
+                  href="/blog"
+                  className="text-sm text-muted hover:text-foreground transition-colors"
+                >
+                  Blog
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/planning-documents"
+                  className="text-sm text-muted hover:text-foreground transition-colors"
+                >
+                  Planning Documents
+                </Link>
+              </li>
+              <li>
                 <span className="text-sm text-muted">How It Works</span>
               </li>
               <li>

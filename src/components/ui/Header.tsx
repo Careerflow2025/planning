@@ -69,6 +69,12 @@ export default function Header() {
                 Planning Documents
               </Link>
               <Link
+                href="/blog"
+                className="text-sm font-medium text-muted hover:text-foreground transition-colors"
+              >
+                Blog
+              </Link>
+              <Link
                 href="/pricing"
                 className="text-sm font-medium text-muted hover:text-foreground transition-colors"
               >
@@ -163,6 +169,13 @@ export default function Header() {
                 className="block px-2 py-2 text-sm font-medium text-muted hover:text-foreground"
               >
                 Planning Documents
+              </Link>
+              <Link
+                href="/blog"
+                onClick={() => setMenuOpen(false)}
+                className="block px-2 py-2 text-sm font-medium text-muted hover:text-foreground"
+              >
+                Blog
               </Link>
               <Link
                 href="/pricing"

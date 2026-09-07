@@ -13,6 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "https://planninglabs.co.uk"),
   title: "PlanScope — UK Planning Reports Made Simple",
   description:
     "Generate AI-assisted UK planning reports in minutes. Enter your postcode, confirm your property, answer a few questions, and get a professional planning report.",
